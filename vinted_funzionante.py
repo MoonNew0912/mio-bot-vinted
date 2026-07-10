@@ -2,15 +2,19 @@ import time
 import random
 import requests
 import threading
+import sys
 
 # ================= CONFIGURAZIONE TELEGRAM =================
 TOKEN_TELEGRAM = "8948272794:AAGGc6pEGnl23ovQK7Ct_GpeYC_Tm0QPL2w"  # Il tuo token BotFather
 ID_CHAT_TELEGRAM = "387028237"    # Il tuo ID numerico
 # ===========================================================
 
-# Memoria globale per non ripetere gli annunci inviati (sia automatici che manuali)
-id_annunci_visti = set()
-lock_visti = threading.Lock()
+# Strutture di memoria separate per evitare interferenze tra i due motori
+id_automatici_visti = set()
+id_manuali_visti = set()
+
+lock_auto = threading.Lock()
+lock_manual = threading.Lock()
 
 def invia_notifica_telegram(messaggio):
     """Invia un messaggio di testo su Telegram"""
@@ -32,7 +36,6 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default, prezzo_mi
     brand = item.get('brand_title', '').lower()
     prezzo = float(item.get('price', {}).get('amount', '0'))
     taglia = item.get('size_title', '').lower().strip()
-    taglia_spaziata = f" {taglia} "
 
     # Whitelist rigida delle tue taglie personali
     taglie_ammesse_vestiti = ['m', 'l', 'xl', 'l/xl']
@@ -65,10 +68,9 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default, prezzo_mi
     return prezzo <= prezzo_massimo_default
 
 def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
-    """Esegue una ricerca istantanea ordinata dal prezzo più basso, filtrando i duplicati già visti"""
+    """Esegue una ricerca istantanea ordinata dal prezzo più basso, usando la memoria dedicata manuale"""
     url_base = "https://www.vinted.it/api/v2/catalog/items"
     
-    # Parametri con ordine dal prezzo più basso (price_low_to_high)
     parametri = {
         'search_text': brand_cercato,
         'order': 'price_low_to_high',
@@ -86,19 +88,17 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
             inviati = 0
             
             for item in articoli:
-                if inviati >= 10:  # Limite massimo di 10 articoli richiesto
+                if inviati >= 10:
                     break
                     
                 item_id = item.get('id')
                 
-                # Controllo thread-safe se l'abbiamo già visto in passato
-                with lock_visti:
-                    if item_id in id_annunci_visti:
+                with lock_manual:
+                    if item_id in id_manuali_visti:
                         continue
                 
                 prezzo = float(item.get('price', {}).get('amount', '0'))
                 
-                # Verifichiamo se rientra nei range di prezzo e supera la whitelist delle taglie
                 if p_min <= prezzo <= p_max and check_articolo_valido(item, brand_cercato, p_max, p_min):
                     titolo = item.get('title', 'Nessun titolo')
                     link = item.get('url', '')
@@ -113,15 +113,15 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
                     )
                     invia_notifica_telegram(testo_notifica)
                     
-                    with lock_visti:
-                        id_annunci_visti.add(item_id)
+                    with lock_manual:
+                        id_manuali_visti.add(item_id)
                     inviati += 1
                     time.sleep(1.0)
                     
             if inviati == 0:
                 invia_notifica_telegram(f"❌ Nessun nuovo articolo trovato per '{brand_cercato}' in quel range di prezzo o con le tue taglie.")
         else:
-            invia_notifica_telegram("⚠️ Errore temporaneo di connessione con i server Vinted durante la ricerca manuale.")
+            invia_notifica_telegram("⚠️ Errore di connessione con i server Vinted durante la ricerca manuale.")
     except Exception as e:
         print(f"Errore ricerca manuale: {e}")
 
@@ -130,7 +130,6 @@ def gestisci_comandi_telegram(session):
     url_updates = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/getUpdates"
     last_update_id = 0
     
-    # Primo contatto per svuotare i vecchi messaggi arretrati
     try:
         r = requests.get(url_updates, params={'offset': -1}, timeout=5).json()
         if r.get('result'):
@@ -147,10 +146,8 @@ def gestisci_comandi_telegram(session):
                 text = message.get('text', '').strip()
                 chat_id = str(message.get('chat', {}).get('id', ''))
                 
-                # Rispondi solo se il messaggio proviene dal tuo ID chat personale
                 if chat_id == ID_CHAT_TELEGRAM and text.lower().startswith('cerca '):
-                    # Formato atteso: cerca Brand, Min, Max
-                    corpo = text[6:] # Rimuove la parola 'cerca '
+                    corpo = text[6:]
                     parti = [p.strip() for p in corpo.split(',')]
                     
                     if len(parti) == 3:
@@ -158,7 +155,6 @@ def gestisci_comandi_telegram(session):
                         try:
                             prezzo_min = float(parti[1])
                             prezzo_max = float(parti[2])
-                            # Avvia la ricerca manuale in un thread separato per non bloccare il bot
                             threading.Thread(target=esegui_ricerca_manuale, args=(session, brand_cercato, prezzo_min, prezzo_max)).start()
                         except ValueError:
                             invia_notifica_telegram("⚠️ Formato prezzi non valido. Usa i numeri, es: cerca Stussy, 10, 40")
@@ -168,7 +164,7 @@ def gestisci_comandi_telegram(session):
             time.sleep(5)
 
 def monitora_vinted_background(session, lista_ricerche):
-    """Il vecchio motore automatico di monitoraggio continuo per i nuovi arrivi"""
+    """Il vecchio motore automatico di monitoraggio continuo iper-veloce per i NUOVI ARRIVI PUBBLICATI AL MOMENTO"""
     url_base_sicuro = "https://www.vinted.it/api/v2/catalog/items"
     parole_bannate_reali = ["rotto", "rotta", "rovinato", "rovinata", "bucato", "bucata", "usurato"]
 
@@ -178,6 +174,7 @@ def monitora_vinted_background(session, lista_ricerche):
             parola_chiave = ricerca["nome"]
             prezzo_massimo = ricerca["prezzo_max"]
 
+            # Ordine rigido 'newest_first' per beccare i secondi esatti del caricamento online
             parametri = {
                 'search_text': parola_chiave,
                 'order': 'newest_first',
@@ -194,8 +191,8 @@ def monitora_vinted_background(session, lista_ricerche):
                     for item in articoli:
                         item_id = item.get('id')
                         
-                        with lock_visti:
-                            if item_id in id_annunci_visti:
+                        with lock_auto:
+                            if item_id in id_automatici_visti:
                                 continue
                         
                         titolo = item.get('title', 'Nessun titolo')
@@ -204,11 +201,11 @@ def monitora_vinted_background(session, lista_ricerche):
                         taglia_vinted = item.get('size_title', '').lower().strip()
 
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
-                            with lock_visti: id_annunci_visti.add(item_id)
+                            with lock_auto: id_automatici_visti.add(item_id)
                             continue
 
                         if any(parola in titolo.lower() for parola in parole_bannate_reali):
-                            with lock_visti: id_annunci_visti.add(item_id)
+                            with lock_auto: id_automatici_visti.add(item_id)
                             continue
 
                         testo_notifica = (
@@ -221,15 +218,15 @@ def monitora_vinted_background(session, lista_ricerche):
                         )
                         invia_notifica_telegram(testo_notifica)
                         
-                        with lock_visti:
-                            id_annunci_visti.add(item_id)
+                        with lock_auto:
+                            id_automatici_visti.add(item_id)
                             
                 elif risposta.status_code == 429:
                     time.sleep(60)
-                time.sleep(random.uniform(2.0, 4.0))
+                time.sleep(random.uniform(1.5, 3.0))
             except Exception:
                 pass
-        time.sleep(10)
+        time.sleep(5)
 
 # Avvio del sistema
 if __name__ == "__main__":
@@ -275,18 +272,16 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    # Fase di pre-caricamento iniziale per riempire il set ed evitare i loop all'avvio
     print("Fase di riscaldamento iniziale...")
-    for r in MIE_RICERCHE[:10]: # Riscaldiamo solo sui primi brand per velocizzare il boot di Render
+    for r in MIE_RICERCHE[:15]:
         try:
             res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 20, 'catalog_ids[]': [5,123]}, timeout=5)
             if res.status_code == 200:
                 for item in res.json().get('items', []):
-                    id_annunci_visti.add(item.get('id'))
+                    id_automatici_visti.add(item.get('id'))
         except Exception: pass
 
-    invia_notifica_telegram("🚀 BOT ONLINE!\n• Monitoraggio automatico attivo.\n• Ricerca manuale pronta! Scrivi: cerca NomeBrand, PrezzoMin, PrezzoMax")
+    invia_notifica_telegram("🚀 BOT RESETTATO E FUNZIONANTE!\n• Monitoraggio automatico sincronizzato sui NUOVI arrivi millesimali.\n• Ricerche manuali separate al 100%.")
 
-    # Avviamo i due motori in parallelo usando i thread
     threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
     gestisci_comandi_telegram(session)
