@@ -22,7 +22,7 @@ def invia_notifica_telegram(messaggio):
         print(f"[ERRORE TELEGRAM] Impossibile inviare la notifica: {e}")
 
 def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
-    """Controlla se l'articolo rispetta i nuovi filtri avanzati di prezzo e anti-spam"""
+    """Controlla se l'articolo rispetta i nuovi filtri avanzati di prezzo, genere maschile e anti-spam"""
     titolo = item.get('title', '').lower()
     descrizione = item.get('description', '').lower()
     brand = item.get('brand_title', '').lower()
@@ -32,12 +32,20 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
     if prezzo < 3.0:
         return False
 
-    # 2. FILTRO BLOCCO CATEGORIE NON ABBIGLIAMENTO (No giochi, CD, film per Undercover/Underground)
+    # 2. FILTRO SOLO MASCHILE / NO LINGERIE FEMMINILE
+    parole_bannate_donna = [
+        'lingerie', 'perizoma', 'reggiseno', 'gonne', 'gonna', 'tacco', 'tacchi', 
+        'collant', 'corsetto', 'pizzo', 'completino intimo', 'mutandine', 'body donna'
+    ]
+    if any(p in titolo or p in descrizione for p in parole_bannate_donna):
+        return False
+
+    # 3. FILTRO BLOCCO CATEGORIE NON ABBIGLIAMENTO (No giochi, CD, film per Undercover/Underground)
     parole_bannate_categoria = ['gioco', 'ps4', 'ps5', 'xbox', 'nintendo', 'switch', 'cd', 'dvd', 'vinile', 'film', 'libro', 'fumetto', 'giocattolo']
     if any(p in titolo or p in descrizione for p in parole_bannate_categoria):
         return False
 
-    # 3. FILTRO ANTI-ESCA (No roba basica senza loghi/marca che usa i brand come esca)
+    # 4. FILTRO ANTI-ESCA (No roba basica senza loghi/marca che usa i brand come esca)
     brand_vuoto = brand in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
     parole_esca = ['tipo', 'stile', 'style', 'inspired', 'look', 'aesthetic', 'simile', 'lookalike']
     alta_moda_spam = ['rick owens', 'enfants riches', 'erd']
@@ -46,7 +54,7 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         if brand_vuoto and any(p in titolo or p in descrizione for p in parole_esca):
             return False  # È spam senza marchi o loghi effettivi, scartato!
 
-    # 4. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
+    # 5. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
     
     # --- CARHARTT ---
     if 'carhartt' in brand or 'carhartt' in titolo or 'carhartt' in parola_chiave.lower():
@@ -58,7 +66,7 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
             return prezzo <= 30.0
 
     # --- NIKE, JORDAN, ADIDAS (Scarpe e Abbigliamento) ---
-    modelli_scarpe = ['jordan', 'dunk', 'air force', 'af1', 'campus', 'gazelle', 'samba', 'yeezy', 'scarpe', 'sneakers']
+    modelli_scarpe = ['jordan', 'dunk', 'air force', 'af1', 'campus', 'gazelle', 'samba', 'yeezy', 'scarpe', 'sneakers', 'jordan 5', 'jordan 11', 'jordan 12', 'jordan 13']
     brand_sportivi = ['nike', 'jordan', 'adidas']
     
     if any(b in brand or b in titolo or b in parola_chiave.lower() for b in brand_sportivi) or any(m in titolo or m in descrizione for m in modelli_scarpe):
@@ -95,7 +103,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     try:
         session.get("https://www.vinted.it/catalog", timeout=10)
         print("Connessione stabilita con successo.\n")
-        invia_notifica_telegram("🚀 Bot Vinted riavviato! Filtri Essentials, Undercover e duplicati corretti.")
+        invia_notifica_telegram("🚀 Bot Vinted riavviato! Filtro abbigliamento maschile e nuovi brand attivi.")
     except Exception as e:
         print(f"Errore connessione iniziale: {e}")
         return
@@ -143,7 +151,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
 
                         # 1. APPLICAZIONE DEI NUOVI FILTRI INTELLIGENTI
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
-                            id_annunci_visti.add(item_id) # Lo marchiamo come visto anche se scartato, per evitare di ricalcolarlo
+                            id_annunci_visti.add(item_id)
                             continue
                             
                         # 2. Controllo Taglie
@@ -183,7 +191,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                         print("="*50 + "\n")
                         
                         id_annunci_visti.add(item_id)
-                        continue  # CAMBIATO DA BREAK A CONTINUE PER EVITARE DUPLICATI NEI GIRI SUCCESSIVI
+                        continue  
                         
                 elif risposta.status_code == 429:
                     print("\n[!] Rate limit (429)! Attesa 60 secondi...")
@@ -196,7 +204,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
         print(f"--- Giro completato. Pausa... ---")
         time.sleep(secondi_attesa_giro)
 
-# LISTA COMPLETA DEI TUOI BRAND PERFETZIONATA
+# LISTA COMPLETA DEI TUOI BRAND AGGIORNATA
 MIE_RICERCHE = [
     {"nome": "Stussy", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "Stussy", "prezzo_max": 40.0, "taglie": ["43"]},
@@ -210,7 +218,7 @@ MIE_RICERCHE = [
     {"nome": "Prada", "prezzo_max": 40.0, "taglie": ["43"]},
     {"nome": "Corteiz", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "Corteiz", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Fear of God Essentials", "prezzo_max": 20.0, "taglie": ["M", "L"]}, # CORRETTO: Cerca il brand streetwear vero
+    {"nome": "Fear of God Essentials", "prezzo_max": 20.0, "taglie": ["M", "L"]}, 
     {"nome": "Fear of God Essentials", "prezzo_max": 40.0, "taglie": ["43"]},
     {"nome": "Denim Tears", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "Denim Tears", "prezzo_max": 40.0, "taglie": ["43"]},
@@ -233,7 +241,7 @@ MIE_RICERCHE = [
     {"nome": "Yohji Yamamoto", "prezzo_max": 40.0, "taglie": ["43"]},
     {"nome": "Comme des Garçons", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "Comme des Garçons", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Undercover", "prezzo_max": 20.0, "taglie": ["M", "L"]}, # CORRETTO: Ora ha il filtro anti-videogiochi/CD
+    {"nome": "Undercover", "prezzo_max": 20.0, "taglie": ["M", "L"]}, 
     {"nome": "Undercover", "prezzo_max": 40.0, "taglie": ["43"]},
     {"nome": "CP Company", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "CP Company", "prezzo_max": 40.0, "taglie": ["43"]},
@@ -245,6 +253,10 @@ MIE_RICERCHE = [
     {"nome": "Nike", "prezzo_max": 65.0, "taglie": ["43"]},
     {"nome": "Jordan", "prezzo_max": 40.0, "taglie": ["M", "L"]},
     {"nome": "Jordan", "prezzo_max": 65.0, "taglie": ["43"]},
+    {"nome": "Jordan 5", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
+    {"nome": "Jordan 11", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
+    {"nome": "Jordan 12", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
+    {"nome": "Jordan 13", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
     {"nome": "Adidas", "prezzo_max": 40.0, "taglie": ["M", "L"]},
     {"nome": "Adidas", "prezzo_max": 65.0, "taglie": ["43"]},
     {"nome": "Chrome Hearts", "prezzo_max": 20.0, "taglie": ["M", "L"]},
@@ -266,7 +278,15 @@ MIE_RICERCHE = [
     {"nome": "Balenciaga", "prezzo_max": 20.0, "taglie": ["M", "L"]},
     {"nome": "Balenciaga", "prezzo_max": 40.0, "taglie": ["43"]},
     {"nome": "Vetements", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Vetements", "prezzo_max": 40.0, "taglie": ["43"]}
+    {"nome": "Vetements", "prezzo_max": 40.0, "taglie": ["43"]},
+    {"nome": "Evisu", "prezzo_max": 30.0, "taglie": ["M", "L"]}, # NUOVO
+    {"nome": "Evisu", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
+    {"nome": "True Religion", "prezzo_max": 30.0, "taglie": ["M", "L"]}, # NUOVO
+    {"nome": "Vicinity", "prezzo_max": 35.0, "taglie": ["M", "L"]}, # NUOVO
+    {"nome": "Acne Studios", "prezzo_max": 40.0, "taglie": ["M", "L"]}, # NUOVO
+    {"nome": "Acne Studios", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
+    {"nome": "derschutze", "prezzo_max": 35.0, "taglie": ["M", "L"]}, # NUOVO
+    {"nome": "Cold Culture", "prezzo_max": 35.0, "taglie": ["M", "L"]} # NUOVO
 ]
 
 monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
