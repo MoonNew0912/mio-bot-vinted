@@ -17,7 +17,6 @@ id_visti_assoluti = set()
 lock_id = threading.Lock()
 
 # --- MAPPA RESTRITTIVA DELLE CATEGORIE UFFICIALI UOMO VINTED ---
-# Solo ed esclusivamente le categorie richieste. Canotte, intimo e accessori non sono inclusi.
 CATEGORIE_UOMO_AMMESSE = {
     5,    # Uomo / Scarpe
     79,   # Uomo / Scarpe / Sneakers
@@ -32,7 +31,6 @@ CATEGORIE_UOMO_AMMESSE = {
     2064, # Uomo / Abbigliamento / Pantaloncini e shorts
 }
 
-# Inizializzazione Flask per tenere in vita il processo su Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -96,8 +94,7 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
             stats["brand"] += 1
             return False
 
-    # --- 3. FILTRO CATEGORIE E SESSO (Rigido su catalog_id) ---
-    # Blocco immediato canotte e canottiere testuali se sfuggono al catalogo principale
+    # --- 3. FILTRO CATEGORIE E SESSO ---
     parole_bannate_categoria = ['canotta', 'canottiera', 'singlet', 'tank top', 'vest']
     if any(p in titolo for p in parole_bannate_categoria):
         stats["categoria"] += 1
@@ -108,20 +105,18 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
             stats["categoria"] += 1
             return False
     else:
-        # Fallback totale sesso e bambini se manca catalog_id
         parole_bannate_sesso = ['woman', 'women', 'female', 'femme', 'donna', 'ladies', 'damen', 'kid', 'kids', 'baby', 'bambin', 'years', 'ans', 'anni']
         if any(p in titolo or p in descrizione for p in parole_bannate_sesso):
             stats["categoria"] += 1
             return False
 
-    # --- 4. FILTRO TAGLIE STRIGENTISSIMO (No taglie enormi/fuori range) ---
+    # --- 4. FILTRO TAGLIE STRIGENTISSIMO ---
     vestiti_ok = {'m', 'l', 'xl'}
     pantaloni_ok = {'33', '34', '36', 'w33', 'w34', 'w36'}
     scarpe_ok = {'42.5', '42 1/2', '42½', '43', '43 1/3', '43⅓'}
     
     token_taglia = set(re.split(r'[\s/(),.-]+', taglia))
     
-    # Se contiene taglie giganti non richieste, scarta subito
     if 'xxl' in token_taglia or '3xl' in token_taglia or '4xl' in token_taglia or 'xs' in token_taglia or 's' in token_taglia:
         stats["taglia"] += 1
         return False
@@ -193,7 +188,7 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
             page += 1
             time.sleep(0.5)
             
-        except Exception as e:
+        except Exception:
             break
 
     debug_stats["inviati"] = len(articoli_validi_trovati)
@@ -202,17 +197,15 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
         f"• Scaricati totali: {debug_stats['ricevuti']}\n"
         f"• Scartati Brand/Replica: {debug_stats['brand']}\n"
         f"• Scartati Categoria/Filtro Canotte: {debug_stats['categoria']}\n"
-        f"• Scartati Taglia (Escluse XS/S/XXL+): {debug_stats['taglia']}\n"
+        f"• Scartati Taglia: {debug_stats['taglia']}\n"
         f"• Scartati Prezzo: {debug_stats['prezzo']}\n"
         f"• Idonei inviati: {debug_stats['inviati']}"
     )
-    print(report_testo)
 
     if not articoli_validi_trovati:
         invia_notifica_telegram(f"❌ Nessun pezzo idoneo trovato.\n\n{report_testo}")
         return
 
-    # Ordinamento finale per prezzo crescente
     articoli_validi_trovati.sort(key=lambda x: float(x.get('price', {}).get('amount', '0')))
 
     for item in articoli_validi_trovati:
@@ -249,7 +242,7 @@ def gestisci_comandi_telegram(session):
 
     while True:
         try:
-            r = requests.get(url_updates, params={'offset': last_update_id, 'timeout': 20}, timeout=25).json()
+            r = requests.get(url_updates, params={'offset': last_update_id, 'timeout': 10}, timeout=15).json()
             for update in r.get('result', []):
                 last_update_id = update['update_id'] + 1
                 message = update.get('message', {})
@@ -268,14 +261,15 @@ def gestisci_comandi_telegram(session):
                             threading.Thread(
                                 target=esegui_ricerca_manuale, 
                                 args=(session, brand_cercato, prezzo_min, prezzo_max),
-                                name=f"ManualSearch-{random.randint(100,999)}"
+                                name=f"ManualSearch-{random.randint(100,999)}",
+                                daemon=True
                             ).start()
                         except ValueError:
                             invia_notifica_telegram("⚠️ Cifre prezzo non valide. Struttura: cerca Stussy, 10, 40")
                     else:
                         invia_notifica_telegram("⚠️ Formato errato. Esempio: cerca Brand, Min, Max")
         except Exception:
-            time.sleep(5)
+            time.sleep(3)
 
 def monitora_vinted_background(session, lista_ricerche):
     url_base_sicuro = "https://www.vinted.it/api/v2/catalog/items"
@@ -333,7 +327,7 @@ def monitora_vinted_background(session, lista_ricerche):
                         invia_notifica_telegram(testo_notifica)
                         time.sleep(0.5)
                         
-                time.sleep(random.uniform(2.5, 4.0))
+                time.sleep(random.uniform(3.0, 5.0))
             except Exception:
                 pass
         time.sleep(2)
@@ -349,9 +343,9 @@ if __name__ == "__main__":
     })
     
     try:
-        res = session.get("https://www.vinted.it/catalog", timeout=10)
+        session.get("https://www.vinted.it/catalog", timeout=10)
     except Exception:
-        sys.exit(1)
+        pass
 
     MIE_RICERCHE = [
         {"nome": "Stussy", "prezzo_max": 40.0}, {"nome": "Supreme", "prezzo_max": 40.0},
@@ -379,11 +373,12 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    invia_notifica_telegram("🛡️ CENTRALINA STRUTTURATA IMMORTALE ATTIVA!\n• Web Server integrato porta 10000 per Render.\n• Filtro restrittivo anti-canotte abilitato.")
-
-    # Avvio del Web Server in un thread separato per soddisfare Render
-    threading.Thread(target=avvia_server_web, daemon=True, name="WebServerThread").start()
+    # Avvio isolato dei singoli thread di background
+    threading.Thread(target=avvia_server_web, name="RenderFlaskServer", daemon=True).start()
+    threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE), name="MonitorVintedBackground", daemon=True).start()
     
-    # Avvio dei moduli core del Bot
-    threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE), daemon=True).start()
+    # Invia un feedback immediato su Telegram per certificare l'accensione pulita dei thread
+    invia_notifica_telegram("🛡️ CENTRALINA STRUTTURATA ISOLATA!\n• Thread comandi e monitor sincronizzati.\n• Puoi inviare ricerche liberamente.")
+
+    # Il thread principale si occupa esclusivamente dei comandi Telegram senza subire blocchi
     gestisci_comandi_telegram(session)
