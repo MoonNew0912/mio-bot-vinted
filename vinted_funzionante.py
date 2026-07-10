@@ -124,7 +124,7 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
 
 def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
     url_base = "https://www.vinted.it/api/v2/catalog/items"
-    invia_notifica_telegram(f"🔍 [RICERCA] Sguinzaglio i cani su Vinted per: {brand_cercato.upper()} ({p_min}€ - {p_max}€)...")
+    invia_notifica_telegram(f"🔍 [RICERCA] Avvio ricerca per: {brand_cercato.upper()} ({p_min}€ - {p_max}€)...")
     
     debug_stats = {"ricevuti": 0, "brand": 0, "categoria": 0, "taglia": 0, "prezzo": 0, "inviati": 0}
     articoli_validi_trovati = []
@@ -141,10 +141,14 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
         
         try:
             risposta = session.get(url_base, params=parametri, timeout=10)
+            
             if risposta.status_code == 429:
+                invia_notifica_telegram("⚠️ API Vinted ha risposto con 429 (Rate Limit). Attendo 10 secondi...")
                 time.sleep(10)
                 continue
+                
             if risposta.status_code != 200:
+                invia_notifica_telegram(f"⚠️ Errore API Vinted: Status {risposta.status_code} alla pagina {page}.")
                 break
                 
             articoli = risposta.json().get('items', [])
@@ -169,22 +173,24 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
             time.sleep(0.5)
             
         except Exception as e:
-            print(f"[ERRORE RICERCA MANUAL] {e}")
+            invia_notifica_telegram(f"❌ Errore critico di connessione durante la chiamata: {e}")
             break
 
+    # Stampa diagnostica su Telegram se non trova nulla, così vedi i numeri subito
     debug_stats["inviati"] = len(articoli_validi_trovati)
-    print("\n" + "="*40)
-    print(f"📊 REPORT DIAGNOSTICO DI RICERCA ({brand_cercato.upper()})")
-    print(f"• Articoli scaricati da Vinted: {debug_stats['ricevuti']}")
-    print(f"❌ Scartati da filtro Brand/Replica: {debug_stats['brand']}")
-    print(f"❌ Scartati da filtro Categoria/Sesso: {debug_stats['categoria']}")
-    print(f"❌ Scartati da filtro Taglia: {debug_stats['taglia']}")
-    print(f"❌ Scartati da filtro Prezzo: {debug_stats['prezzo']}")
-    print(f"✅ Articoli inviati a Telegram: {debug_stats['inviati']}")
-    print("="*40 + "\n")
+    report_testo = (
+        f"📊 DIAGNOSTICA LIVE ({brand_cercato.upper()}):\n"
+        f"• Scaricati totali: {debug_stats['ricevuti']}\n"
+        f"• Scartati Brand/Replica: {debug_stats['brand']}\n"
+        f"• Scartati Categoria/Sesso: {debug_stats['categoria']}\n"
+        f"• Scartati Taglia: {debug_stats['taglia']}\n"
+        f"• Scartati Prezzo: {debug_stats['prezzo']}\n"
+        f"• Idonei inviati: {debug_stats['inviati']}"
+    )
+    print(report_testo)
 
     if not articoli_validi_trovati:
-        invia_notifica_telegram(f"❌ Nessun nuovo pezzo idoneo trovato per '{brand_cercato}' con le tue specifiche.")
+        invia_notifica_telegram(f"❌ Nessun pezzo idoneo trovato.\n\n{report_testo}")
         return
 
     # Ordinamento per prezzo crescente
@@ -278,7 +284,7 @@ def monitora_vinted_background(session, lista_ricerche):
                     
                 if risposta.status_code == 200:
                     articoli = risposta.json().get('items', [])
-                    for item in articles := articoli:
+                    for item in articoli:
                         item_id = item.get('id')
                         
                         with lock_id:
@@ -324,8 +330,11 @@ if __name__ == "__main__":
     })
     
     try:
-        session.get("https://www.vinted.it/catalog", timeout=10)
-    except Exception:
+        res = session.get("https://www.vinted.it/catalog", timeout=10)
+        if res.status_code != 200:
+            invia_notifica_telegram(f"🚨 ERRORE INIZIALIZZAZIONE: Vinted Home risponde {res.status_code}")
+    except Exception as e:
+        invia_notifica_telegram(f"🚨 ERRORE CONNESSIONE INIZIALE: {e}")
         sys.exit(1)
 
     MIE_RICERCHE = [
@@ -354,7 +363,7 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    invia_notifica_telegram("🛡️ CENTRALINA STRUTTURATA COMPILATA CORRETTAMENTE!\n• Errori di runtime rimossi.\n• Log diagnostico attivo nel terminale.")
+    invia_notifica_telegram("🛡️ CENTRALINA ULTRA-CORAZZATA AVVIATA!\n• Log ed errori reindirizzati live su questa chat.")
 
     threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
     gestisci_comandi_telegram(session)
