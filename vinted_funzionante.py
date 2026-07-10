@@ -4,6 +4,8 @@ import requests
 import threading
 import sys
 import re
+import os
+from flask import Flask
 
 # ================= CONFIGURAZIONE TELEGRAM =================
 TOKEN_TELEGRAM = "8948272794:AAGGc6pEGnl23ovQK7Ct_GpeYC_Tm0QPL2w"  # Il tuo token BotFather
@@ -14,22 +16,32 @@ ID_CHAT_TELEGRAM = "387028237"    # Il tuo ID numerico
 id_visti_assoluti = set()
 lock_id = threading.Lock()
 
-# --- MAPPA DELLE CATEGORIE UFFICIALI UOMO VINTED ---
+# --- MAPPA RESTRITTIVA DELLE CATEGORIE UFFICIALI UOMO VINTED ---
+# Solo ed esclusivamente le categorie richieste. Canotte, intimo e accessori non sono inclusi.
 CATEGORIE_UOMO_AMMESSE = {
     5,    # Uomo / Scarpe
     79,   # Uomo / Scarpe / Sneakers
     80,   # Uomo / Scarpe / Stivali
     81,   # Uomo / Scarpe / Stringate & Mocassini
     2050, # Uomo / Scarpe / Altre scarpe
-    2052, # Uomo / Abbigliamento
-    2054, # Uomo / Abbigliamento / Top e t-shirt
-    2056, # Uomo / Abbigliamento / Maglioni e felpe
-    2058, # Uomo / Abbigliamento / Cappotti e giacche
-    2060, # Uomo / Abbigliamento / Pantaloni
+    2054, # Uomo / Abbigliamento / Top e t-shirt (T-shirt, Magliette, Polo)
+    2056, # Uomo / Abbigliamento / Maglioni e felpe (Felpe con cappuccio, Girocollo, Maglioni)
+    2058, # Uomo / Abbigliamento / Cappotti e giacche (Giacche, Cappotti, Piumini)
+    2060, # Uomo / Abbigliamento / Pantaloni (Chino, Cargo, Tuta)
     2062, # Uomo / Abbigliamento / Jeans
     2064, # Uomo / Abbigliamento / Pantaloncini e shorts
-    2068, # Uomo / Abbigliamento / Abiti e blazer
 }
+
+# Inizializzazione Flask per tenere in vita il processo su Render
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot Vinted Online & Active", 200
+
+def avvia_server_web():
+    porta = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=porta)
 
 def invia_notifica_telegram(messaggio):
     url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage"
@@ -84,32 +96,43 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
             stats["brand"] += 1
             return False
 
-    # --- 3. FILTRO CATEGORIE E SESSO (Nativo) ---
+    # --- 3. FILTRO CATEGORIE E SESSO (Rigido su catalog_id) ---
+    # Blocco immediato canotte e canottiere testuali se sfuggono al catalogo principale
+    parole_bannate_categoria = ['canotta', 'canottiera', 'singlet', 'tank top', 'vest']
+    if any(p in titolo for p in parole_bannate_categoria):
+        stats["categoria"] += 1
+        return False
+
     if catalog_id is not None:
         if catalog_id not in CATEGORIE_UOMO_AMMESSE:
             stats["categoria"] += 1
             return False
     else:
+        # Fallback totale sesso e bambini se manca catalog_id
         parole_bannate_sesso = ['woman', 'women', 'female', 'femme', 'donna', 'ladies', 'damen', 'kid', 'kids', 'baby', 'bambin', 'years', 'ans', 'anni']
         if any(p in titolo or p in descrizione for p in parole_bannate_sesso):
             stats["categoria"] += 1
             return False
 
-    # --- 4. FILTRO TAGLIE OBBLIGATORIE ---
+    # --- 4. FILTRO TAGLIE STRIGENTISSIMO (No taglie enormi/fuori range) ---
     vestiti_ok = {'m', 'l', 'xl'}
     pantaloni_ok = {'33', '34', '36', 'w33', 'w34', 'w36'}
     scarpe_ok = {'42.5', '42 1/2', '42½', '43', '43 1/3', '43⅓'}
     
     token_taglia = set(re.split(r'[\s/(),.-]+', taglia))
     
+    # Se contiene taglie giganti non richieste, scarta subito
+    if 'xxl' in token_taglia or '3xl' in token_taglia or '4xl' in token_taglia or 'xs' in token_taglia or 's' in token_taglia:
+        stats["taglia"] += 1
+        return False
+
     passa_taglia = False
     if any(s in taglia for s in scarpe_ok):
         passa_taglia = True
     elif any(p in token_taglia for p in pantaloni_ok):
         passa_taglia = True
     elif token_taglia.intersection(vestiti_ok):
-        if 'xs' not in token_taglia and 'xxl' not in token_taglia and 's' not in token_taglia:
-            passa_taglia = True
+        passa_taglia = True
 
     if not passa_taglia:
         stats["taglia"] += 1
@@ -143,12 +166,10 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
             risposta = session.get(url_base, params=parametri, timeout=10)
             
             if risposta.status_code == 429:
-                invia_notifica_telegram("⚠️ API Vinted ha risposto con 429 (Rate Limit). Attendo 10 secondi...")
                 time.sleep(10)
                 continue
                 
             if risposta.status_code != 200:
-                invia_notifica_telegram(f"⚠️ Errore API Vinted: Status {risposta.status_code} alla pagina {page}.")
                 break
                 
             articoli = risposta.json().get('items', [])
@@ -173,17 +194,15 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
             time.sleep(0.5)
             
         except Exception as e:
-            invia_notifica_telegram(f"❌ Errore critico di connessione durante la chiamata: {e}")
             break
 
-    # Stampa diagnostica su Telegram se non trova nulla, così vedi i numeri subito
     debug_stats["inviati"] = len(articoli_validi_trovati)
     report_testo = (
         f"📊 DIAGNOSTICA LIVE ({brand_cercato.upper()}):\n"
         f"• Scaricati totali: {debug_stats['ricevuti']}\n"
         f"• Scartati Brand/Replica: {debug_stats['brand']}\n"
-        f"• Scartati Categoria/Sesso: {debug_stats['categoria']}\n"
-        f"• Scartati Taglia: {debug_stats['taglia']}\n"
+        f"• Scartati Categoria/Filtro Canotte: {debug_stats['categoria']}\n"
+        f"• Scartati Taglia (Escluse XS/S/XXL+): {debug_stats['taglia']}\n"
         f"• Scartati Prezzo: {debug_stats['prezzo']}\n"
         f"• Idonei inviati: {debug_stats['inviati']}"
     )
@@ -193,7 +212,7 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
         invia_notifica_telegram(f"❌ Nessun pezzo idoneo trovato.\n\n{report_testo}")
         return
 
-    # Ordinamento per prezzo crescente
+    # Ordinamento finale per prezzo crescente
     articoli_validi_trovati.sort(key=lambda x: float(x.get('price', {}).get('amount', '0')))
 
     for item in articoli_validi_trovati:
@@ -331,10 +350,7 @@ if __name__ == "__main__":
     
     try:
         res = session.get("https://www.vinted.it/catalog", timeout=10)
-        if res.status_code != 200:
-            invia_notifica_telegram(f"🚨 ERRORE INIZIALIZZAZIONE: Vinted Home risponde {res.status_code}")
-    except Exception as e:
-        invia_notifica_telegram(f"🚨 ERRORE CONNESSIONE INIZIALE: {e}")
+    except Exception:
         sys.exit(1)
 
     MIE_RICERCHE = [
@@ -363,7 +379,11 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    invia_notifica_telegram("🛡️ CENTRALINA ULTRA-CORAZZATA AVVIATA!\n• Log ed errori reindirizzati live su questa chat.")
+    invia_notifica_telegram("🛡️ CENTRALINA STRUTTURATA IMMORTALE ATTIVA!\n• Web Server integrato porta 10000 per Render.\n• Filtro restrittivo anti-canotte abilitato.")
 
-    threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
+    # Avvio del Web Server in un thread separato per soddisfare Render
+    threading.Thread(target=avvia_server_web, daemon=True, name="WebServerThread").start()
+    
+    # Avvio dei moduli core del Bot
+    threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE), daemon=True).start()
     gestisci_comandi_telegram(session)
