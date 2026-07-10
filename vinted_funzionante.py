@@ -10,12 +10,22 @@ TOKEN_TELEGRAM = "8948272794:AAGGc6pEGnl23ovQK7Ct_GpeYC_Tm0QPL2w"  # Il tuo toke
 ID_CHAT_TELEGRAM = "387028237"    # Il tuo ID numerico
 # ===========================================================
 
-# Strutture di memoria separate per evitare qualsiasi loop o duplicato
+# Cache storiche ad alta capacità per evitare categoricamente i duplicati
 id_automatici_visti = set()
 id_manuali_visti = set()
 
 lock_auto = threading.Lock()
 lock_manual = threading.Lock()
+
+def pulisci_cache_se_piena():
+    """Mantiene la cache efficiente senza dimenticare gli ID recenti"""
+    global id_automatici_visti, id_manuali_visti
+    with lock_auto:
+        if len(id_automatici_visti) > 5000:
+            id_automatici_visti = set(list(id_automatici_visti)[-2000:])
+    with lock_manual:
+        if len(id_manuali_visti) > 5000:
+            id_manuali_visti = set(list(id_manuali_visti)[-2000:])
 
 def invia_notifica_telegram(messaggio):
     """Invia un messaggio di testo su Telegram"""
@@ -30,31 +40,45 @@ def invia_notifica_telegram(messaggio):
     except Exception as e:
         print(f"[ERRORE TELEGRAM] Impossibile inviare la notifica: {e}")
 
-def check_articolo_valido(item, parola_chiave, prezzo_massimo_default, prezzo_minimo_custom=3.0):
-    """Controlla se l'articolo rispetta i filtri con una whitelist iper-restrittiva antimicrobica"""
+def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_minimo_custom=3.0):
+    """Controlla se l'articolo rispetta in modo maniacale taglie, brand reale ed esclusioni"""
     titolo = item.get('title', '').lower()
     descrizione = item.get('description', '').lower()
-    brand = item.get('brand_title', '').lower()
+    brand_reale = item.get('brand_title', '').lower().strip()
     prezzo = float(item.get('price', {}).get('amount', '0'))
     taglia = item.get('size_title', '').lower().strip()
 
-    # --- 1. BLOCCO BAMBINO / ANNI (Estrae tutti i numeri isolati dalla taglia) ---
-    # Riconosce formati come "13 anni", "14 ans", "tg 12", "152 cm", ecc.
+    # --- 1. VERIFICA BRAND REALE (Anti-Esca / Anti-Keyword-Spam) ---
+    # Se il brand impostato ufficialmente dal venditore su Vinted non c'entra nulla con quello cercato, scarta.
+    brand_cercato_clean = brand_cercato.lower().strip()
+    
+    # Gestione acronimo ERD
+    if brand_cercato_clean == "erd":
+        brand_cercato_clean = "enfants riches"
+
+    if brand_cercato_clean not in brand_reale:
+        # Permetti il passaggio solo se il brand è vuoto/non verificato MA il titolo è ultra-specifico,
+        # altrimenti se dice "Nike" e tu cercavi "Rick Owens", viene falciato qui.
+        brand_vuoto = brand_reale in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
+        if not brand_vuoto:
+            return False
+        if brand_cercato_clean != "nike" and brand_cercato_clean != "adidas" and brand_cercato_clean not in titolo:
+            return False
+
+    # --- 2. BLOCCO TOTALE TAGLIE BAMBINO / ANNI ---
     numeri_nella_taglia = re.findall(r'\b\d+\b', taglia)
     for num_str in numeri_nella_taglia:
         num = int(num_str)
-        # Se c'è un numero inferiore a 33 (e non fa parte di una frazione di scarpa ammessa), è roba da bambini
         if num < 33:
             if not ('42' in taglia or '43' in taglia):
                 return False
 
-    # --- 2. WHITELIST RIGIDA DELLE TUE TAGLIE PERSONALI ---
+    # --- 3. WHITELIST RESTRITTIVA TAGLIE UOMO ---
     taglie_ammesse_vestiti = ['m', 'l', 'xl', 'l/xl']
     taglie_ammesse_pantaloni = ['33', '34', '36', 'w33', 'w34', 'w36']
     taglie_ammesse_scarpe = ['42.5', '42 1/2', '43', '43 1/3']
     tutte_le_taglie_ok = taglie_ammesse_vestiti + taglie_ammesse_pantaloni + taglie_ammesse_scarpe
 
-    # Controllo esatto e parziale di sicurezza sulla taglia ufficiale
     passa_whitelist = False
     if taglia in tutte_le_taglie_ok:
         passa_whitelist = True
@@ -62,16 +86,14 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default, prezzo_mi
         if any(t_ok in taglia for t_ok in tutte_le_taglie_ok):
             passa_whitelist = True
             
-    # Se non è presente nessuna delle tue taglie reali, bocciato
     if not passa_whitelist:
         return False
 
-    # Filtro di sbarramento per taglie spurie combinate male (es: "S/M" o scarpa 39 infilata erroneamente)
     if any(vietata in taglia for vietata in ['xs', 's', 'small', '35', '36', '37', '38', '39', '40', '41']):
         if not ('42.5' in taglia or '43' in taglia or '42 1/2' in taglia):
             return False
 
-    # --- 3. ESCLUSIONE CATEGORIE REPARTO DONNA / INFANZIA ---
+    # --- 4. FILTRO CATEGORIE INFANZIA / DONNA ---
     parole_bannate_categoria = [
         'donna', 'woman', 'femme', 'giocattolo', 'gioco', 'toy', 'joc', 'juguete', 
         'bambino', 'bambina', 'neonata', 'neonato', 'kid', 'kids', 'baby', 'years', 'anni'
@@ -80,31 +102,31 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default, prezzo_mi
         if 'uomo' not in titolo and 'men' not in titolo:
             return False
 
-    # --- 4. PREZZO MINIMO E ANTI-REPLICA ESPRESSO ---
     if prezzo < prezzo_minimo_custom:
         return False
 
-    brand_vuoto = brand in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
+    # Controllo anti-replica fake elementare
     parole_esca = ['tipo', 'stile', 'style', 'inspired', 'look', 'aesthetic', 'simile', 'lookalike']
-    if any(k in brand or k in titolo or k in descrizione for k in ['rick owens', 'enfants riches', 'erd']):
-        if brand_vuoto and any(p in titolo or p in descrizione for p in parole_esca):
+    if any(k in brand_reale or k in titolo for k in ['rick owens', 'enfants riches']):
+        if any(p in titolo or p in descrizione for p in parole_esca):
             return False  
 
     return prezzo <= prezzo_massimo_default
 
 def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
-    """Esegue una ricerca manuale istantanea pulita da ogni tipo di interferenza"""
+    """Ricerca manuale istantanea pulita da annunci esca e duplicati"""
     url_base = "https://www.vinted.it/api/v2/catalog/items"
+    pulisci_cache_se_piena()
     
     parametri = {
         'search_text': brand_cercato,
         'order': 'price_low_to_high',
-        'per_page': 50,
+        'per_page': 40,
         'catalog_ids[]': [5, 123]
     }
     
     try:
-        invia_notifica_telegram(f"🔍 Cerco su Vinted: {brand_cercato.upper()} (da {p_min}€ a {p_max}€) - Prezzo Crescente...")
+        invia_notifica_telegram(f"🔍 [RICERCA] Sguinzaglio i cani su Vinted per: {brand_cercato.upper()} ({p_min}€ - {p_max}€)...")
         risposta = session.get(url_base, params=parametri, timeout=10)
         
         if risposta.status_code == 200:
@@ -126,13 +148,15 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
                 if p_min <= prezzo <= p_max and check_articolo_valido(item, brand_cercato, p_max, p_min):
                     titolo = item.get('title', 'Nessun titolo')
                     link = item.get('url', '')
-                    taglia_vinted = item.get('size_title', '').lower().strip()
+                    taglia_vinted = item.get('size_title', '').upper().strip()
+                    brand_effettivo = item.get('brand_title', 'Non specificato').upper()
                     
                     testo_notifica = (
-                        f"🔎 RICERCA MANUALE: {brand_cercato.upper()}\n"
-                        f"💰 Prezzo: {prezzo} €\n"
+                        f"🔎 RISERVA MANUALE CHIESTA:\n"
+                        f"🔥 Brand Rilevato: {brand_effettivo}\n"
                         f"👕 Articolo: {titolo}\n"
-                        f"📏 Taglia: {taglia_vinted.upper()}\n\n"
+                        f"📏 Taglia: {taglia_vinted}\n"
+                        f"💰 Prezzo: {prezzo} €\n\n"
                         f"🔗 LINK:\n{link}"
                     )
                     invia_notifica_telegram(testo_notifica)
@@ -140,17 +164,15 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
                     with lock_manual:
                         id_manuali_visti.add(item_id)
                     inviati += 1
-                    time.sleep(1.0)
+                    time.sleep(0.8)
                     
             if inviati == 0:
-                invia_notifica_telegram(f"❌ Nessun nuovo articolo idoneo trovato per '{brand_cercato}' con i filtri applicati.")
-        else:
-            invia_notifica_telegram("⚠️ Server Vinted occupati. Riprova tra pochi istanti.")
+                invia_notifica_telegram(f"❌ Nessun pezzo autentico trovato per '{brand_cercato}' in questo range di prezzo.")
     except Exception as e:
         print(f"Errore ricerca manuale: {e}")
 
 def gestisci_comandi_telegram(session):
-    """Resta in ascolto costante su Telegram per intercettare i tuoi messaggi 'cerca ...'"""
+    """Ascolta i comandi di ricerca inviati su Telegram"""
     url_updates = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/getUpdates"
     last_update_id = 0
     
@@ -181,27 +203,30 @@ def gestisci_comandi_telegram(session):
                             prezzo_max = float(parti[2])
                             threading.Thread(target=esegui_ricerca_manuale, args=(session, brand_cercato, prezzo_min, prezzo_max)).start()
                         except ValueError:
-                            invia_notifica_telegram("⚠️ Formato prezzi non valido. Usa i numeri.")
+                            invia_notifica_telegram("⚠️ Prezzi non validi. Formato corretto: cerca Stussy, 10, 40")
                     else:
-                        invia_notifica_telegram("⚠️ Formato errato! Scrivi ad esempio:\ncerca Stussy, 15, 40")
+                        invia_notifica_telegram("⚠️ Scrivi esattamente così: cerca Brand, Min, Max")
         except Exception:
             time.sleep(5)
 
 def monitora_vinted_background(session, lista_ricerche):
-    """Motore automatico h24 focalizzato esclusivamente sui nuovi arrivi istantanei"""
+    """Monitoraggio h24 focalizzato SOLO E SOLTANTO sui nuovi arrivi pubblicati al millesimo di secondo"""
     url_base_sicuro = "https://www.vinted.it/api/v2/catalog/items"
     parole_bannate_reali = ["rotto", "rotta", "rovinato", "rovinata", "bucato", "bucata", "usurato"]
 
     while True:
+        pulisci_cache_se_piena()
         random.shuffle(lista_ricerche)
+        
         for ricerca in lista_ricerche:
             parola_chiave = ricerca["nome"]
             prezzo_massimo = ricerca["prezzo_max"]
 
+            # Ordine rigido sui più recenti in assoluto
             parametri = {
                 'search_text': parola_chiave,
                 'order': 'newest_first',
-                'per_page': 15,
+                'per_page': 8,
                 'status_ids[]': [1, 2, 3, 6],
                 'catalog_ids[]': [5, 123]
             }
@@ -217,46 +242,46 @@ def monitora_vinted_background(session, lista_ricerche):
                             if item_id in id_automatici_visti:
                                 continue
                         
+                        # Inserimento immediato nei visti per blindare il sistema da invii multipli
+                        with lock_auto:
+                            id_automatici_visti.add(item_id)
+
                         titolo = item.get('title', 'Nessun titolo')
                         prezzo = float(item.get('price', {}).get('amount', '0'))
                         link = item.get('url', '')
-                        taglia_vinted = item.get('size_title', '').lower().strip()
+                        taglia_vinted = item.get('size_title', '').upper().strip()
+                        brand_rilevato = item.get('brand_title', 'Generico').upper()
 
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
-                            with lock_auto: id_automatici_visti.add(item_id)
                             continue
 
                         if any(parola in titolo.lower() for parola in parole_bannate_reali):
-                            with lock_auto: id_automatici_visti.add(item_id)
                             continue
 
                         testo_notifica = (
-                            f"⚡ RECENTISSIMO ABBIGLIAMENTO UOMO!\n"
-                            f"🔥 Brand: {parola_chiave.upper()}\n"
+                            f"⚡ APPENA PUBBLICATO ORA!\n"
+                            f"🔥 Brand Reale: {brand_rilevato}\n"
                             f"👕 Articolo: {titolo}\n"
-                            f"📏 Taglia: {taglia_vinted.upper()}\n"
+                            f"📏 Taglia: {taglia_vinted}\n"
                             f"💰 Prezzo: {prezzo} €\n\n"
                             f"🔗 LINK DIRETTO:\n{link}"
                         )
                         invia_notifica_telegram(testo_notifica)
                         
-                        with lock_auto:
-                            id_automatici_visti.add(item_id)
-                            
                 elif risposta.status_code == 429:
-                    time.sleep(60)
-                time.sleep(random.uniform(2.0, 4.0))
+                    time.sleep(45)
+                time.sleep(random.uniform(2.0, 3.5))
             except Exception:
                 pass
-        time.sleep(10)
+        time.sleep(5)
 
-# Avvio del sistema
+# Avvio del sistema principale
 if __name__ == "__main__":
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
-        'Accept': 'application/json, text/plain, */*',
+        'Accept': 'application/json, text/plain, telehealth/*',
         'Connection': 'keep-alive',
         'Referer': 'https://www.vinted.it/catalog'
     })
@@ -292,16 +317,16 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    # Pre-caricamento per evitare falsi positivi immediati
-    for r in MIE_RICERCHE[:15]:
+    # Warm-up iniziale per bloccare tutta la roba vecchia già online prima del lancio
+    for r in MIE_RICERCHE:
         try:
-            res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 25}, timeout=5)
+            res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 35}, timeout=4)
             if res.status_code == 200:
                 for item in res.json().get('items', []):
                     id_automatici_visti.add(item.get('id'))
         except Exception: pass
 
-    invia_notifica_telegram("🛡️ BOT ULTRA-AGGIORNATO!\n• Blocco totale taglie bambini/13 anni e duplicati attivo.\n• Monitoraggio e comandi indipendenti.")
+    invia_notifica_telegram("🛡️ CENTRALINA AGGIORNATA!\n• Blocco totale keyword esca e brand falsi attivo.\n• Invio singolo blindato sui nuovi arrivi istantanei.")
 
     threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
     gestisci_comandi_telegram(session)
