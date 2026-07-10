@@ -22,17 +22,23 @@ def invia_notifica_telegram(messaggio):
         print(f"[ERRORE TELEGRAM] Impossibile inviare la notifica: {e}")
 
 def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
-    """Controlla se l'articolo rispetta i filtri di prezzo e anti-spam avanzati"""
+    """Controlla se l'articolo rispetta i filtri di prezzo, taglia rigida e anti-spam"""
     titolo = item.get('title', '').lower()
     descrizione = item.get('description', '').lower()
     brand = item.get('brand_title', '').lower()
     prezzo = float(item.get('price', {}).get('amount', '0'))
+    taglia = item.get('size_title', '').lower().strip()
     
-    # 1. FILTRO PREZZO MINIMO GENERALE
+    # 1. BLOCCO RIGIDO TAGLIE PICCOLE (Se Vinted sbaglia la categoria)
+    taglie_bannate = ['xs', ' s ', '/s', ' s', 's/', '36', '38', '40', '41', '42 ']
+    if taglia in ['xs', 's'] or any(t in f" {taglia} " for t in taglie_bannate):
+        return False
+
+    # 2. FILTRO PREZZO MINIMO GENERALE
     if prezzo < 3.0:
         return False
 
-    # 2. FILTRO ANTI-ESCA SUI BRAND ALTA MODA
+    # 3. FILTRO ANTI-ESCA SUI BRAND ALTA MODA
     brand_vuoto = brand in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
     parole_esca = ['tipo', 'stile', 'style', 'inspired', 'look', 'aesthetic', 'simile', 'lookalike']
     alta_moda_spam = ['rick owens', 'enfants riches', 'erd']
@@ -41,9 +47,7 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         if brand_vuoto and any(p in titolo or p in descrizione for p in parole_esca):
             return False  
 
-    # 3. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
-    
-    # --- CARHARTT ---
+    # 4. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
     if 'carhartt' in brand or 'carhartt' in titolo or 'carhartt' in parola_chiave.lower():
         if any(p in titolo or p in descrizione for p in ['pant', 'jeans', 'cargo', 'pantaloni', 'pantalone']):
             return prezzo <= 40.0
@@ -52,7 +56,6 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         else:
             return prezzo <= 30.0
 
-    # --- NIKE, JORDAN, ADIDAS (Scarpe e Abbigliamento) ---
     modelli_scarpe = ['jordan', 'dunk', 'air force', 'af1', 'campus', 'gazelle', 'samba', 'yeezy', 'scarpe', 'sneakers', 'jordan 5', 'jordan 11', 'jordan 12', 'jordan 13']
     brand_sportivi = ['nike', 'jordan', 'adidas']
     
@@ -64,7 +67,6 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         else:
             return prezzo <= 35.0
 
-    # --- RICK OWENS / ENFANTS RICHES DÉPRIMÉS (ERD) ---
     if any(k in brand or k in titolo or k in descrizione or k in parola_chiave.lower() for k in alta_moda_spam):
         if any(p in titolo or p in descrizione for p in ['scarpe', 'stivali', 'boots', 'sneakers', 'ramones', 'geobasket']):
             return prezzo <= 80.0
@@ -89,7 +91,6 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     try:
         session.get("https://www.vinted.it/catalog", timeout=10)
         print("Connessione stabilita con successo.\n")
-        invia_notifica_telegram("🔒 BOT BLINDATO! Attivati i filtri nativi Vinted: SOLO UOMO e SOLO TAGLIE M/L/XL, 42.5/43, W33/34/36.")
     except Exception as e:
         print(f"Errore connessione iniziale: {e}")
         return
@@ -100,9 +101,30 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     
     parole_bannate_reali = ["rotto", "rotta", "rovinato", "rovinata", "bucato", "bucata", "usurato"]
 
-    print(f"⚡ BOT AVVIATO SU {len(lista_ricerche)} RICERCHE UOMO SELEZIONATE.")
+    # --- FASE 1: PRIMO GIRO DI PRE-CARICAMENTO (ZITTO ED EVITA I LOOP) ---
+    print("📥 Fase di riscaldamento: memorizzo gli annunci attuali per evitare duplicati...")
+    for ricerca in lista_ricerche:
+        parametri = {
+            'search_text': ricerca["nome"],
+            'order': 'newest_first',
+            'per_page': 30,
+            'catalog_ids[]': [5, 123],
+            'size_ids[]': [207, 208, 209, 778, 779, 363, 364, 366]
+        }
+        try:
+            risposta = session.get(url_base_sicuro + percorso_api, params=parametri, timeout=7)
+            if risposta.status_code == 200:
+                for item in risposta.json().get('items', []):
+                    id_annunci_visti.add(item.get('id'))
+        except Exception:
+            pass
+        time.sleep(1.0)
+    
+    print(f"✅ Riscaldamento completato. Memorizzati {len(id_annunci_visti)} articoli già online.")
+    invia_notifica_telegram("🚀 BOT ATTIVO! Da questo momento riceverai SOLO i nuovi caricamenti in tempo reale nelle tue taglie esatte.")
     print("="*60)
 
+    # --- FASE 2: MONITORAGGIO REALE IN DIRETTA ---
     while True:
         random.shuffle(lista_ricerche)
         
@@ -110,15 +132,12 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
             parola_chiave = ricerca["nome"]
             prezzo_massimo = ricerca["prezzo_max"]
 
-            # PARAMETRI NATIVI VINTED: Forza il server a risponderci solo con roba da uomo e taglie specifiche
             parametri = {
                 'search_text': parola_chiave,
                 'order': 'newest_first',
-                'per_page': 20,
+                'per_page': 10,
                 'status_ids[]': [1, 2, 3, 6],
-                # 5 == Abbigliamento Uomo, 123 == Scarpe Uomo
                 'catalog_ids[]': [5, 123],
-                # ID Taglie Vinted ufficiali: 207=M, 208=L, 209=XL, 778=42.5, 779=43, 363=W33, 364=W34, 366=W36
                 'size_ids[]': [207, 208, 209, 778, 779, 363, 364, 366]
             }
             
@@ -127,10 +146,11 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                 
                 if risposta.status_code == 200:
                     articoli = risposta.json().get('items', [])
-                    print(f"[DEBUG] '{parola_chiave}' -> Trovati {len(articoli)} articoli filtrati uomo.")
                     
                     for item in articoli:
                         item_id = item.get('id')
+                        
+                        # Se l'articolo era già presente prima, saltalo senza pietà
                         if item_id in id_annunci_visti:
                             continue
                             
@@ -139,42 +159,38 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                         link = item.get('url', '')
                         taglia_vinted = item.get('size_title', '').lower().strip()
 
-                        # 1. Filtro Prezzo Avanzato
+                        # Filtri di controllo stringenti su taglie e prezzi
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
                             id_annunci_visti.add(item_id)
                             continue
 
-                        # 2. Controllo Parole Bandite residue
-                        if any(parola in titolo.lower() for parola in parole_bannate_reali):
+                        if any(parola in titolo.lower() for parole in parole_bannate_reali):
                             id_annunci_visti.add(item_id)
                             continue
 
-                        # === COSTRUZIONE NOTIFICA TELEGRAM ===
+                        # === INVIO NOTIFICA SOLO PER I NUOVI ARRIVI ===
                         testo_notifica = (
-                            f"🎯 AFFARE UOMO TROVATO!\n"
-                            f"🔥 Brand Cercato: {parola_chiave.upper()}\n"
+                            f"⚡ RECENTISSIMO ABBIGLIAMENTO UOMO!\n"
+                            f"🔥 Brand: {parola_chiave.upper()}\n"
                             f"👕 Articolo: {titolo}\n"
                             f"📏 Taglia: {taglia_vinted.upper()}\n"
                             f"💰 Prezzo: {prezzo} €\n\n"
-                            f"🔗 LINK:\n{link}"
+                            f"🔗 LINK DIRETTO:\n{link}"
                         )
                         invia_notifica_telegram(testo_notifica)
                         
                         id_annunci_visti.add(item_id)
-                        continue  
                         
                 elif risposta.status_code == 429:
-                    print("\n[!] Rate limit (429)! Attesa 60 secondi...")
                     time.sleep(60)
                     
                 time.sleep(random.uniform(1.5, 3.0))
             except Exception:
                 pass
             
-        print(f"--- Giro completato. Pausa... ---")
         time.sleep(secondi_attesa_giro)
 
-# LISTA DELLE TUE RICERCHE (Prezzi tarati per taglie M/L/XL/42.5/43/W33-34-36)
+# LISTA COMPLETA
 MIE_RICERCHE = [
     {"nome": "Stussy", "prezzo_max": 40.0},
     {"nome": "Supreme", "prezzo_max": 40.0},
