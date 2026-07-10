@@ -26,7 +26,6 @@ def invia_notifica(msg):
     except: pass
 
 def esegui_ricerca(brand, p_max):
-    # Forziamo i parametri direttamente nella chiamata API
     params = {
         'search_text': brand,
         'catalog_ids': CAT_UOMO_ID,
@@ -46,15 +45,12 @@ def esegui_ricerca(brand, p_max):
     except: pass
 
 def monitora():
-    brand_nicchia = [
-        "Rick Owens", "Enfants Riches Déprimés", "ERD", "Raf Simons", 
-        "Margiela", "Chrome Hearts", "Corteiz", "Denim Tears", 
-        "Cactus Plant", "Off-White", "Helmut Lang", "Yohji Yamamoto",
-        "Comme des Garçons", "Undercover", "CP Company", "Stone Island"
-    ]
+    # Lista corretta senza errori di sintassi
+    brand_nicchia = ["Carhartt", "Levi's", "Dickies", "CP Company", "Stone Island"]
+    
     while True:
         for b in brand_nicchia:
-            # Budget dinamico: 80 per i pezzi rari, 40 per gli altri
+            # Budget dinamico
             limit = 80 if b in ["Rick Owens", "Enfants Riches Déprimés", "ERD"] else 40
             esegui_ricerca(b, limit)
             time.sleep(random.uniform(5, 10))
@@ -63,5 +59,4 @@ if __name__ == "__main__":
     threading.Thread(target=avvia_server_web, daemon=True).start()
     threading.Thread(target=monitora, daemon=True).start()
     invia_notifica("🛡️ CENTRALINA NICCHIA ATTIVA (Filtri API Nativi)")
-    # Loop vuoto per mantenere il bot vivo
     while True: time.sleep(60)
