@@ -10,7 +10,7 @@ TAGLIE_OK = ['m', 'l', 'xl', '46', '48', '50', '52']
 # MEMORIA ANTI-SPAM
 articoli_gia_inviati = set()
 
-# SERVER WEB PER MANTENERE IL BOT ATTIVO (Render richiede una porta aperta)
+# SERVER WEB PER MANTENERE IL BOT ATTIVO
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot attivo", 200
@@ -64,7 +64,11 @@ def monitora():
             time.sleep(30)
 
 if __name__ == "__main__":
-    # Avvia server web (Flask)
+    # Avvia server web
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
+    
+    # Notifica di avvio
+    invia_notifica("🚀 BOT LIVE! Sto scansionando Carhartt, Stone Island, CP Company e Dickies...")
+    
     # Avvia monitoraggio
     monitora()
