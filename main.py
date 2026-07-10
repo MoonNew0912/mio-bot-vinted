@@ -1,58 +1,70 @@
-import logging
-import asyncio
-import os
-from telegram.ext import ApplicationBuilder, CommandHandler
-from vinted_unofficial.client import VintedClient
-import sqlite3
-import time
+import time, requests, threading, os
+from flask import Flask
 
-# --- CONFIGURAZIONE ---
-TOKEN = os.getenv("8948272794:AAEjodIDu_-WDIeby8WB2I6N_baki-h-rSo") # Impostalo nelle Environment Variables di Render
+# CONFIGURAZIONE
+TOKEN = "8948272794:AAEjodIDu_-WDIeby8WB2I6N_baki-h-rSo"
 CHAT_ID = "387028237"
-DB_PATH = "vinted_bot.db"
+BRAND_LIST = ["Carhartt", "Stone Island", "CP Company", "Dickies"]
+TAGLIE_OK = ['m', 'l', 'xl', '46', '48', '50', '52']
 
-# --- DB SETUP ---
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS processed (item_id INTEGER PRIMARY KEY)")
-    conn.commit()
-    conn.close()
+# MEMORIA ANTI-SPAM
+articoli_gia_inviati = set()
 
-# --- LOGICA BOT ---
-async def start(update, context):
-    await update.message.reply_text("Bot monitoraggio Vinted attivo e operativo!")
+# SERVER WEB PER MANTENERE IL BOT ATTIVO (Render richiede una porta aperta)
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot attivo", 200
 
-async def monitor_vinted(context):
-    """Funzione di loop per il monitoraggio"""
-    client = VintedClient()
-    # Esempio di ricerca base (modifica i parametri a piacere)
+def invia_notifica(msg):
     try:
-        items = client.items.search({"search_text": "stone island", "order": "newest_first"})
-        for item in items:
-            conn = sqlite3.connect(DB_PATH)
-            exists = conn.execute("SELECT 1 FROM processed WHERE item_id = ?", (item.id,)).fetchone()
-            
-            if not exists:
-                # Invia notifica
-                msg = f"🔥 NUOVO ARTICOLO: {item.title}\nPrezzo: {item.price}€\nLink: {item.url}"
-                await context.bot.send_message(chat_id=CHAT_ID, text=msg)
-                
-                # Salva nel DB
-                conn.execute("INSERT INTO processed (item_id) VALUES (?)", (item.id,))
-                conn.commit()
-            conn.close()
-    except Exception as e:
-        print(f"Errore durante lo scraping: {e}")
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                      json={"chat_id": CHAT_ID, "text": msg}, timeout=5)
+    except: pass
 
-if __name__ == '__main__':
-    init_db()
-    application = ApplicationBuilder().token(TOKEN).build()
+def esegui_ricerca(brand):
+    global articoli_gia_inviati
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+        'Referer': 'https://www.vinted.it/'
+    }
     
-    # Aggiungi job per il monitoraggio (ogni 60 secondi)
-    job_queue = application.job_queue
-    job_queue.run_repeating(monitor_vinted, interval=60, first=10)
-    
-    application.add_handler(CommandHandler("start", start))
-    
-    print("Bot avviato su Render...")
-    application.run_polling()
+    try:
+        session = requests.Session()
+        session.get("https://www.vinted.it/", headers=headers, timeout=10)
+        r = session.get(f"https://www.vinted.it/api/v2/catalog/items?search_text={brand}&order=newest_first&per_page=20", 
+                        headers=headers, timeout=10)
+        
+        if r.status_code != 200: return
+
+        for item in r.json().get('items', []):
+            item_id = str(item.get('id'))
+            if item_id in articoli_gia_inviati: continue
+            
+            # FILTRI
+            prezzo = float(item.get('price', {}).get('amount', 0))
+            taglia = str(item.get('size_title', '')).lower()
+            titolo = item.get('title', '').lower()
+            
+            if prezzo == 0 or prezzo > 50: continue
+            if taglia not in TAGLIE_OK: continue
+            if any(p in titolo for p in ['donna', 'femme', 'bikini', 'costume']): continue
+            
+            # NOTIFICA
+            msg = f"🔥 {item.get('brand_title')} | {titolo}\n💰 {prezzo}€\n🔗 {item.get('url')}"
+            invia_notifica(msg)
+            articoli_gia_inviati.add(item_id)
+            if len(articoli_gia_inviati) > 300: articoli_gia_inviati.clear()
+            
+    except: pass
+
+def monitora():
+    while True:
+        for b in BRAND_LIST:
+            esegui_ricerca(b)
+            time.sleep(30)
+
+if __name__ == "__main__":
+    # Avvia server web (Flask)
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
+    # Avvia monitoraggio
+    monitora()
