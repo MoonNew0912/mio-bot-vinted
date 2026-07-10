@@ -22,23 +22,49 @@ def invia_notifica_telegram(messaggio):
         print(f"[ERRORE TELEGRAM] Impossibile inviare la notifica: {e}")
 
 def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
-    """Controlla se l'articolo rispetta i filtri di prezzo, taglia rigida e anti-spam"""
+    """Controlla se l'articolo rispetta i filtri con LOGICA WHITELIST (Solo quello che vuoi)"""
     titolo = item.get('title', '').lower()
     descrizione = item.get('description', '').lower()
     brand = item.get('brand_title', '').lower()
     prezzo = float(item.get('price', {}).get('amount', '0'))
-    taglia = item.get('size_title', '').lower().strip()
     
-    # 1. BLOCCO RIGIDO TAGLIE PICCOLE (Se Vinted sbaglia la categoria)
-    taglie_bannate = ['xs', ' s ', '/s', ' s', 's/', '36', '38', '40', '41', '42 ']
-    if taglia in ['xs', 's'] or any(t in f" {taglia} " for t in taglie_bannate):
-        return False
+    # Estraiamo la taglia e puliamola da spazi extra
+    taglia_originale = item.get('size_title', '')
+    taglia = taglia_originale.lower().strip()
 
-    # 2. FILTRO PREZZO MINIMO GENERALE
+    # ================= FILTRO RIGIDO WHITELIST TAGLIE =================
+    # Definiamo le uniche e sole taglie accettate per te
+    taglie_ammesse_vestiti = ['m', 'l', 'xl', 'l/xl']
+    taglie_ammesse_pantaloni = ['33', '34', '36', 'w33', 'w34', 'w36']
+    taglie_ammesse_scarpe = ['42.5', '42 1/2', '43', '43 1/3']
+    
+    tutte_le_taglie_ok = taglie_ammesse_vestiti + taglie_ammesse_pantaloni + taglie_ammesse_scarpe
+
+    # Se la taglia dell'articolo NON è nella tua whitelist, eliminalo subito
+    if taglia not in tutte_le_taglie_ok:
+        # Controllo di sicurezza per taglie scritte come "42.5 eu" o "m / 38"
+        if not any(t_ok in taglia for t_ok in tutte_le_taglie_ok):
+            return False
+        # Se contiene una taglia ammessa ma contiene ANCHE una taglia vietata (es. "S/M" o "39"), blocca
+        if any(vietata in taglia for vietata in ['xs', 's', '35', '36', '37', '38', '39', '40', '41']) and not ('42.5' in taglia or '43' in taglia):
+            return False
+
+    # ================= ANTI-SPAM DONNA / GIOCATTOLI =================
+    # Se nel titolo o nella descrizione ci sono parole chiave da donna o infantili, blocca
+    parole_bannate_categoria = [
+        'donna', 'woman', 'femme', 'giocattolo', 'gioco', 'toy', 'joc', 'juguete', 
+        'bambino', 'bambina', 'neonata', 'neonato', 'kid', 'kids', 'baby'
+    ]
+    if any(p in titolo or p in descrizione for p in parole_bannate_categoria):
+        # Eccezione se specifica chiaramente uomo nel titolo per evitare falsi positivi
+        if 'uomo' not in titolo and 'men' not in titolo:
+            return False
+
+    # ================= FILTRI PREZZO E QUALITÀ =================
     if prezzo < 3.0:
         return False
 
-    # 3. FILTRO ANTI-ESCA SUI BRAND ALTA MODA
+    # Filtro anti-esca (oggetti "tipo" o "stile" brand famosi)
     brand_vuoto = brand in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
     parole_esca = ['tipo', 'stile', 'style', 'inspired', 'look', 'aesthetic', 'simile', 'lookalike']
     alta_moda_spam = ['rick owens', 'enfants riches', 'erd']
@@ -47,7 +73,7 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         if brand_vuoto and any(p in titolo or p in descrizione for p in parole_esca):
             return False  
 
-    # 4. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
+    # Controllo tetti massimi di budget
     if 'carhartt' in brand or 'carhartt' in titolo or 'carhartt' in parola_chiave.lower():
         if any(p in titolo or p in descrizione for p in ['pant', 'jeans', 'cargo', 'pantaloni', 'pantalone']):
             return prezzo <= 40.0
@@ -101,7 +127,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     
     parole_bannate_reali = ["rotto", "rotta", "rovinato", "rovinata", "bucato", "bucata", "usurato"]
 
-    # --- FASE 1: PRIMO GIRO DI PRE-CARICAMENTO (ZITTO ED EVITA I LOOP) ---
+    # --- FASE 1: PRIMO GIRO DI PRE-CARICAMENTO ---
     print("📥 Fase di riscaldamento: memorizzo gli annunci attuali per evitare duplicati...")
     for ricerca in lista_ricerche:
         parametri = {
@@ -121,7 +147,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
         time.sleep(1.0)
     
     print(f"✅ Riscaldamento completato. Memorizzati {len(id_annunci_visti)} articoli già online.")
-    invia_notifica_telegram("🚀 BOT ATTIVO! Da questo momento riceverai SOLO i nuovi caricamenti in tempo reale nelle tue taglie esatte.")
+    invia_notifica_telegram("🛡️ BOT BLINDATO IN MODALITÀ COESIONE! Attive solo taglie M/L/XL, Pantaloni 33/34/36, Scarpe 42.5/43. Caccia aperta.")
     print("="*60)
 
     # --- FASE 2: MONITORAGGIO REALE IN DIRETTA ---
@@ -150,7 +176,6 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                     for item in articoli:
                         item_id = item.get('id')
                         
-                        # Se l'articolo era già presente prima, saltalo senza pietà
                         if item_id in id_annunci_visti:
                             continue
                             
@@ -159,16 +184,15 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                         link = item.get('url', '')
                         taglia_vinted = item.get('size_title', '').lower().strip()
 
-                        # Filtri di controllo stringenti su taglie e prezzi
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
                             id_annunci_visti.add(item_id)
                             continue
 
-                        if any(parola in titolo.lower() for parole in parole_bannate_reali):
+                        if any(parola in titolo.lower() for parola in parole_bannate_reali):
                             id_annunci_visti.add(item_id)
                             continue
 
-                        # === INVIO NOTIFICA SOLO PER I NUOVI ARRIVI ===
+                        # === INVIO NOTIFICA IPER-FILTRATA ===
                         testo_notifica = (
                             f"⚡ RECENTISSIMO ABBIGLIAMENTO UOMO!\n"
                             f"🔥 Brand: {parola_chiave.upper()}\n"
@@ -238,5 +262,7 @@ MIE_RICERCHE = [
     {"nome": "derschutze", "prezzo_max": 35.0},
     {"nome": "Cold Culture", "prezzo_max": 35.0}
 ]
+
+monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
 
 monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
