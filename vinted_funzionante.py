@@ -40,12 +40,11 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
     prezzo = float(item.get('price', {}).get('amount', '0'))
     taglia = item.get('size_title', '').lower().strip()
 
-    # --- 1. VERIFICA BRAND REALISTICA ---
+    # --- 1. VERIFICA BRAND ---
     brand_cercato_clean = brand_cercato.lower().strip()
     if brand_cercato_clean == "erd":
         brand_cercato_clean = "enfants riches"
 
-    # Se il brand ufficiale non corrisponde, controlliamo se è nei testi per non perdere i tag non inseriti a mano
     if brand_cercato_clean not in brand_reale:
         brand_vuoto = brand_reale in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
         if not brand_vuoto:
@@ -53,36 +52,40 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
         if brand_cercato_clean not in titolo and brand_cercato_clean not in descrizione:
             return False
 
-    # --- 2. BLOCCO ANNI / BAMBINI ---
-    numeri_nella_taglia = re.findall(r'\b\d+\b', taglia)
-    for num_str in numeri_nella_taglia:
-        num = int(num_str)
-        if num < 33:
-            if not ('42' in taglia or '43' in taglia):
-                return False
-
-    # --- 3. WHITELIST TAGLIE CORRETTE ---
-    taglie_ammesse_vestiti = ['m', 'l', 'xl', 'l/xl']
-    taglie_ammesse_pantaloni = ['33', '34', '36', 'w33', 'w34', 'w36']
-    taglie_ammesse_scarpe = ['42.5', '42 1/2', '43', '43 1/3']
-    tutte_le_taglie_ok = taglie_ammesse_vestiti + taglie_ammesse_pantaloni + taglie_ammesse_scarpe
-
-    passa_whitelist = False
-    if taglia in tutte_le_taglie_ok:
-        passa_whitelist = True
-    else:
-        if any(t_ok in taglia for t_ok in tutte_le_taglie_ok):
-            passa_whitelist = True
-            
-    if not passa_whitelist:
+    # --- 2. BLOCCO ANNI / BAMBINI (Esclude esplicitamente stringhe tipo '13 anni', '14 ans') ---
+    if any(b in taglia for b in ['ans', 'years', 'anni', 'bambin', 'kid', 'mounat']):
         return False
 
-    if any(vietata in taglia for vietata in ['xs', 's', 'small', '35', '36', '37', '38', '39', '40', '41']):
-        if not ('42.5' in taglia or '43' in taglia or '42 1/2' in taglia):
-            return False
+    # --- 3. NUOVA LOGICA FILTRO TAGLIE INTELLIGENTE ---
+    # Taglie ammesse divise per tipologia per evitare conflitti di stringa
+    vestiti_ok = ['m', 'l', 'xl', 'l/xl']
+    pantaloni_ok = ['33', '34', '36', 'w33', 'w34', 'w36']
+    scarpe_ok = ['42.5', '42 1/2', '43', '43 1/3']
+    
+    passa_taglia = False
+
+    # Controlliamo se è una scarpa (contiene 42 o 43 con le sue frazioni)
+    if any(s in taglia for s in scarpe_ok):
+        passa_taglia = True
+    # Controlliamo se è un pantalone (presenza di W o corrispondenza esatta del numero)
+    elif any(p == taglia or f"w{p}" in taglia for p in ['33', '34', '36']):
+        passa_taglia = True
+    # Controlliamo se è un vestito/maglia (le lettere devono essere isolate, non sub-stringhe di 'small' o 'xs')
+    else:
+        # Crea i token separandoli da spazi o barre per intercettare "m", "l", "xl" puliti
+        token_taglia = re.split(r'[\s/(),.-]+', taglia)
+        if any(v in token_taglia for v in vestiti_ok):
+            # Protezione finale: se tra i token c'è "xs" o "s" (e non è xl), scarta
+            if 'xs' in token_taglia or ('s' in token_taglia and 'xl' not in token_taglia):
+                passa_taglia = False
+            else:
+                passa_taglia = True
+
+    if not passa_taglia:
+        return False
 
     # --- 4. CATEGORIE SVIATE ---
-    parole_bannate_categoria = ['donna', 'woman', 'femme', 'giocattolo', 'gioco', 'bambino', 'bambina', 'kid', 'kids', 'baby', 'years', 'anni']
+    parole_bannate_categoria = ['donna', 'woman', 'femme', 'giocattolo', 'gioco', 'baby', 'neonat']
     if any(p in titolo or p in descrizione for p in parole_bannate_categoria):
         if 'uomo' not in titolo and 'men' not in titolo:
             return False
@@ -98,11 +101,10 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
     return prezzo <= prezzo_massimo_default
 
 def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
-    """Ricerca manuale aperta (senza catalog_ids bloccati che rompevano le chiamate)"""
+    """Ricerca manuale aperta con filtri taglia flessibili"""
     url_base = "https://www.vinted.it/api/v2/catalog/items"
     pulisci_cache_se_piena()
     
-    # Rimosso il filtro numerico rigido sull'API, deleghiamo tutto alla nostra funzione interna di controllo
     parametri = {
         'search_text': brand_cercato,
         'order': 'price_low_to_high',
@@ -206,7 +208,6 @@ def monitora_vinted_background(session, lista_ricerche):
             parola_chiave = ricerca["nome"]
             prezzo_massimo = ricerca["prezzo_max"]
 
-            # Ottimizzato anche il monitor di background liberandolo dai vecchi ID catalog rigidi
             parametri = {
                 'search_text': parola_chiave,
                 'order': 'newest_first',
@@ -235,7 +236,7 @@ def monitora_vinted_background(session, lista_ricerche):
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
                             continue
 
-                        if any(parola in titolo.lower() for parola in parole_bannate_reali):
+                        if any(parola in titolo.lower() for parole in parole_bannate_reali):
                             continue
 
                         testo_notifica = (
@@ -296,15 +297,15 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    for r in MIE_RICERCHE[:10]:
+    for r in MIE_RICERCHE[:5]:
         try:
-            res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 20}, timeout=4)
+            res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 15}, timeout=4)
             if res.status_code == 200:
                 for item in res.json().get('items', []):
                     id_automatici_visti.add(item.get('id'))
         except Exception: pass
 
-    invia_notifica_telegram("🛡️ CENTRALINA RIPRISTINATA!\n• API sbloccata e ripulita dagli ID obsoleti.\n• Ricerca manuale universale attiva.")
+    invia_notifica_telegram("🛡️ CENTRALINA AGGIORNATA!\n• Filtro taglie intelligente ricalibrato (M/L/XL, pantaloni 33-36, scarpe 42.5-43).\n• Ricerca manuale pronta al test.")
 
     threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
     gestisci_comandi_telegram(session)
