@@ -264,5 +264,3 @@ MIE_RICERCHE = [
 ]
 
 monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
-
-monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
