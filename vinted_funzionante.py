@@ -52,30 +52,24 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
         if brand_cercato_clean not in titolo and brand_cercato_clean not in descrizione:
             return False
 
-    # --- 2. BLOCCO ANNI / BAMBINI (Esclude esplicitamente stringhe tipo '13 anni', '14 ans') ---
+    # --- 2. BLOCCO ANNI / BAMBINI ---
     if any(b in taglia for b in ['ans', 'years', 'anni', 'bambin', 'kid', 'mounat']):
         return False
 
-    # --- 3. NUOVA LOGICA FILTRO TAGLIE INTELLIGENTE ---
-    # Taglie ammesse divise per tipologia per evitare conflitti di stringa
+    # --- 3. FILTRO TAGLIE INTELLIGENTE ---
     vestiti_ok = ['m', 'l', 'xl', 'l/xl']
     pantaloni_ok = ['33', '34', '36', 'w33', 'w34', 'w36']
     scarpe_ok = ['42.5', '42 1/2', '43', '43 1/3']
     
     passa_taglia = False
 
-    # Controlliamo se è una scarpa (contiene 42 o 43 con le sue frazioni)
     if any(s in taglia for s in scarpe_ok):
         passa_taglia = True
-    # Controlliamo se è un pantalone (presenza di W o corrispondenza esatta del numero)
     elif any(p == taglia or f"w{p}" in taglia for p in ['33', '34', '36']):
         passa_taglia = True
-    # Controlliamo se è un vestito/maglia (le lettere devono essere isolate, non sub-stringhe di 'small' o 'xs')
     else:
-        # Crea i token separandoli da spazi o barre per intercettare "m", "l", "xl" puliti
         token_taglia = re.split(r'[\s/(),.-]+', taglia)
         if any(v in token_taglia for v in vestiti_ok):
-            # Protezione finale: se tra i token c'è "xs" o "s" (e non è xl), scarta
             if 'xs' in token_taglia or ('s' in token_taglia and 'xl' not in token_taglia):
                 passa_taglia = False
             else:
@@ -101,13 +95,14 @@ def check_articolo_valido(item, brand_cercato, prezzo_massimo_default, prezzo_mi
     return prezzo <= prezzo_massimo_default
 
 def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
-    """Ricerca manuale aperta con filtri taglia flessibili"""
+    """Ricerca manuale modificata con ordinamento 'più recenti' e contatore di debug"""
     url_base = "https://www.vinted.it/api/v2/catalog/items"
     pulisci_cache_se_piena()
     
+    # Cambiato in 'newest_first' per evitare i blocchi degli annunci in evidenza obsoleti
     parametri = {
         'search_text': brand_cercato,
-        'order': 'price_low_to_high',
+        'order': 'newest_first',
         'per_page': 50
     }
     
@@ -117,6 +112,7 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
         
         if risposta.status_code == 200:
             articoli = risposta.json().get('items', [])
+            totale_ricevuti = len(articoli)
             inviati = 0
             
             for item in articoli:
@@ -153,9 +149,9 @@ def esegui_ricerca_manuale(session, brand_cercato, p_min, p_max):
                     time.sleep(0.8)
                     
             if inviati == 0:
-                invia_notifica_telegram(f"❌ Nessun pezzo idoneo trovato per '{brand_cercato}' con le tue taglie in questa fascia di prezzo.")
+                invia_notifica_telegram(f"❌ Nessun pezzo idoneo trovato. (Analizzati {totale_ricevuti} articoli scaricati da Vinted per '{brand_cercato}')")
         else:
-            invia_notifica_telegram("⚠️ Impossibile raggiungere Vinted. Riprova tra poco.")
+            invia_notifica_telegram(f"⚠️ Errore di connessione Vinted (Status: {risposta.status_code}). Riprova.")
     except Exception as e:
         print(f"Errore ricerca manuale: {e}")
 
@@ -188,7 +184,7 @@ def gestisci_comandi_telegram(session):
                         try:
                             prezzo_min = float(parti[1])
                             prezzo_max = float(parti[2])
-                            threading.Thread(target=esegui_ricerca_manuale, args=(session, brand_cercato, prezzo_min, prezzo_max)).start()
+                            threading.Thread(target=esegui_riceline_manuale, args=(session, brand_cercato, prezzo_min, prezzo_max), name=f"Manual-{brand_cercato}").start()
                         except ValueError:
                             invia_notifica_telegram("⚠️ Prezzi non validi. Formato: cerca Stussy, 10, 40")
                     else:
@@ -236,7 +232,7 @@ def monitora_vinted_background(session, lista_ricerche):
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
                             continue
 
-                        if any(parola in titolo.lower() for parole in parole_bannate_reali):
+                        if any(parola in titolo.lower() for parola in parole_bannate_reali):
                             continue
 
                         testo_notifica = (
@@ -297,15 +293,7 @@ if __name__ == "__main__":
         {"nome": "Cold Culture", "prezzo_max": 35.0}
     ]
 
-    for r in MIE_RICERCHE[:5]:
-        try:
-            res = session.get("https://www.vinted.it/api/v2/catalog/items", params={'search_text': r['nome'], 'order': 'newest_first', 'per_page': 15}, timeout=4)
-            if res.status_code == 200:
-                for item in res.json().get('items', []):
-                    id_automatici_visti.add(item.get('id'))
-        except Exception: pass
-
-    invia_notifica_telegram("🛡️ CENTRALINA AGGIORNATA!\n• Filtro taglie intelligente ricalibrato (M/L/XL, pantaloni 33-36, scarpe 42.5-43).\n• Ricerca manuale pronta al test.")
+    invia_notifica_telegram("⚙️ AGGIORNAMENTO STRUTTURALE REALE:\n• Ottimizzato ordinamento manuale sui flussi live.\n• Log diagnostico attivo.")
 
     threading.Thread(target=monitora_vinted_background, args=(session, MIE_RICERCHE)).start()
     gestisci_comandi_telegram(session)
