@@ -22,7 +22,7 @@ def invia_notifica_telegram(messaggio):
         print(f"[ERRORE TELEGRAM] Impossibile inviare la notifica: {e}")
 
 def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
-    """Controlla se l'articolo rispetta i nuovi filtri avanzati di prezzo, genere maschile e anti-spam"""
+    """Controlla se l'articolo rispetta i filtri di prezzo e anti-spam avanzati"""
     titolo = item.get('title', '').lower()
     descrizione = item.get('description', '').lower()
     brand = item.get('brand_title', '').lower()
@@ -32,29 +32,16 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
     if prezzo < 3.0:
         return False
 
-    # 2. FILTRO SOLO MASCHILE / NO LINGERIE FEMMINILE
-    parole_bannate_donna = [
-        'lingerie', 'perizoma', 'reggiseno', 'gonne', 'gonna', 'tacco', 'tacchi', 
-        'collant', 'corsetto', 'pizzo', 'completino intimo', 'mutandine', 'body donna'
-    ]
-    if any(p in titolo or p in descrizione for p in parole_bannate_donna):
-        return False
-
-    # 3. FILTRO BLOCCO CATEGORIE NON ABBIGLIAMENTO (No giochi, CD, film per Undercover/Underground)
-    parole_bannate_categoria = ['gioco', 'ps4', 'ps5', 'xbox', 'nintendo', 'switch', 'cd', 'dvd', 'vinile', 'film', 'libro', 'fumetto', 'giocattolo']
-    if any(p in titolo or p in descrizione for p in parole_bannate_categoria):
-        return False
-
-    # 4. FILTRO ANTI-ESCA (No roba basica senza loghi/marca che usa i brand come esca)
+    # 2. FILTRO ANTI-ESCA SUI BRAND ALTA MODA
     brand_vuoto = brand in ['', 'senza marca', 'no brand', 'anonyme', 'unknown']
     parole_esca = ['tipo', 'stile', 'style', 'inspired', 'look', 'aesthetic', 'simile', 'lookalike']
     alta_moda_spam = ['rick owens', 'enfants riches', 'erd']
     
     if any(k in brand or k in titolo or k in descrizione for k in alta_moda_spam):
         if brand_vuoto and any(p in titolo or p in descrizione for p in parole_esca):
-            return False  # È spam senza marchi o loghi effettivi, scartato!
+            return False  
 
-    # 5. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
+    # 3. CONTROLLO PREZZI MASSIMI DINAMICI PER BRAND E CATEGORIA
     
     # --- CARHARTT ---
     if 'carhartt' in brand or 'carhartt' in titolo or 'carhartt' in parola_chiave.lower():
@@ -84,7 +71,6 @@ def check_articolo_valido(item, parola_chiave, prezzo_massimo_default):
         else:
             return prezzo <= 50.0
 
-    # Prezzo massimo di default basato sulla lista se non rientra nei brand speciali sopra
     return prezzo <= prezzo_massimo_default
 
 
@@ -103,7 +89,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     try:
         session.get("https://www.vinted.it/catalog", timeout=10)
         print("Connessione stabilita con successo.\n")
-        invia_notifica_telegram("🚀 Bot Vinted riavviato! Filtro abbigliamento maschile e nuovi brand attivi.")
+        invia_notifica_telegram("🔒 BOT BLINDATO! Attivati i filtri nativi Vinted: SOLO UOMO e SOLO TAGLIE M/L/XL, 42.5/43, W33/34/36.")
     except Exception as e:
         print(f"Errore connessione iniziale: {e}")
         return
@@ -114,7 +100,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
     
     parole_bannate_reali = ["rotto", "rotta", "rovinato", "rovinata", "bucato", "bucata", "usurato"]
 
-    print(f"⚡ BOT AVVIATO SU {len(lista_ricerche)} RICERCHE.")
+    print(f"⚡ BOT AVVIATO SU {len(lista_ricerche)} RICERCHE UOMO SELEZIONATE.")
     print("="*60)
 
     while True:
@@ -123,13 +109,17 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
         for ricerca in lista_ricerche:
             parola_chiave = ricerca["nome"]
             prezzo_massimo = ricerca["prezzo_max"]
-            taglie_accettate = ricerca["taglie"]
 
+            # PARAMETRI NATIVI VINTED: Forza il server a risponderci solo con roba da uomo e taglie specifiche
             parametri = {
                 'search_text': parola_chiave,
                 'order': 'newest_first',
                 'per_page': 20,
-                'status_ids[]': [1, 2, 3, 6]
+                'status_ids[]': [1, 2, 3, 6],
+                # 5 == Abbigliamento Uomo, 123 == Scarpe Uomo
+                'catalog_ids[]': [5, 123],
+                # ID Taglie Vinted ufficiali: 207=M, 208=L, 209=XL, 778=42.5, 779=43, 363=W33, 364=W34, 366=W36
+                'size_ids[]': [207, 208, 209, 778, 779, 363, 364, 366]
             }
             
             try:
@@ -137,7 +127,7 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                 
                 if risposta.status_code == 200:
                     articoli = risposta.json().get('items', [])
-                    print(f"[DEBUG] '{parola_chiave}' -> Trovati {len(articoli)} articoli recenti.")
+                    print(f"[DEBUG] '{parola_chiave}' -> Trovati {len(articoli)} articoli filtrati uomo.")
                     
                     for item in articoli:
                         item_id = item.get('id')
@@ -149,32 +139,19 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                         link = item.get('url', '')
                         taglia_vinted = item.get('size_title', '').lower().strip()
 
-                        # 1. APPLICAZIONE DEI NUOVI FILTRI INTELLIGENTI
+                        # 1. Filtro Prezzo Avanzato
                         if not check_articolo_valido(item, parola_chiave, prezzo_massimo):
                             id_annunci_visti.add(item_id)
                             continue
-                            
-                        # 2. Controllo Taglie
-                        taglia_valida = False
-                        for t in taglie_accettate:
-                            t_clean = str(t).lower().strip()
-                            if t_clean in taglia_vinted or t_clean in titolo.lower():
-                                if t_clean in ["m", "l"] and ("xl" in taglia_vinted or "xxl" in taglia_vinted):
-                                    continue
-                                taglia_valida = True
-                                break
-                        if not taglia_valida:
-                            id_annunci_visti.add(item_id)
-                            continue
 
-                        # 3. Controllo Parole Bandite
+                        # 2. Controllo Parole Bandite residue
                         if any(parola in titolo.lower() for parola in parole_bannate_reali):
                             id_annunci_visti.add(item_id)
                             continue
 
                         # === COSTRUZIONE NOTIFICA TELEGRAM ===
                         testo_notifica = (
-                            f"🎯 AFFARE TROVATO!\n"
+                            f"🎯 AFFARE UOMO TROVATO!\n"
                             f"🔥 Brand Cercato: {parola_chiave.upper()}\n"
                             f"👕 Articolo: {titolo}\n"
                             f"📏 Taglia: {taglia_vinted.upper()}\n"
@@ -182,13 +159,6 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
                             f"🔗 LINK:\n{link}"
                         )
                         invia_notifica_telegram(testo_notifica)
-                        
-                        # === STAMPA SUL COMPUTER (PROMPT) ===
-                        print("\n" + "="*50)
-                        print(f"🌟 TROVATO: {parola_chiave.upper()} - {titolo}")
-                        print(f"💰 Prezzo: {prezzo}€ | Taglia: {taglia_vinted.upper()}")
-                        print(f"🔗 LINK PER COMPUTER:\n{link}")
-                        print("="*50 + "\n")
                         
                         id_annunci_visti.add(item_id)
                         continue  
@@ -204,89 +174,53 @@ def monitora_vinted_istantaneo(lista_ricerche, secondi_attesa_giro=10):
         print(f"--- Giro completato. Pausa... ---")
         time.sleep(secondi_attesa_giro)
 
-# LISTA COMPLETA DEI TUOI BRAND AGGIORNATA
+# LISTA DELLE TUE RICERCHE (Prezzi tarati per taglie M/L/XL/42.5/43/W33-34-36)
 MIE_RICERCHE = [
-    {"nome": "Stussy", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Stussy", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Supreme", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Supreme", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Palace", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Palace", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Burberry", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Burberry", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Prada", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Prada", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Corteiz", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Corteiz", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Fear of God Essentials", "prezzo_max": 20.0, "taglie": ["M", "L"]}, 
-    {"nome": "Fear of God Essentials", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Denim Tears", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Denim Tears", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Cactus Plant", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Cactus Plant", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Off-White", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Off-White", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Raf Simons", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Raf Simons", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Rick Owens", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Rick Owens", "prezzo_max": 80.0, "taglie": ["43"]},
-    {"nome": "Enfants Riches Déprimés", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Enfants Riches Déprimés", "prezzo_max": 80.0, "taglie": ["43"]},
-    {"nome": "ERD", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Helmut Lang", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Helmut Lang", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Margiela", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Margiela", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Yohji Yamamoto", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Yohji Yamamoto", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Comme des Garçons", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Comme des Garçons", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Undercover", "prezzo_max": 20.0, "taglie": ["M", "L"]}, 
-    {"nome": "Undercover", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "CP Company", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "CP Company", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Stone Island", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Stone Island", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Carhartt", "prezzo_max": 40.0, "taglie": ["M", "L"]}, 
-    {"nome": "Carhartt", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Nike", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Nike", "prezzo_max": 65.0, "taglie": ["43"]},
-    {"nome": "Jordan", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Jordan", "prezzo_max": 65.0, "taglie": ["43"]},
-    {"nome": "Jordan 5", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "Jordan 11", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "Jordan 12", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "Jordan 13", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "Adidas", "prezzo_max": 40.0, "taglie": ["M", "L"]},
-    {"nome": "Adidas", "prezzo_max": 65.0, "taglie": ["43"]},
-    {"nome": "Chrome Hearts", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Chrome Hearts", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Hellstar", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Hellstar", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Sp5der", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Sp5der", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Syna World", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Syna World", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Trapstar", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Trapstar", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Sicko Born", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Sicko Born", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Gallery Dept", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Gallery Dept", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "RRR123", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "RRR123", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Balenciaga", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Balenciaga", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Vetements", "prezzo_max": 20.0, "taglie": ["M", "L"]},
-    {"nome": "Vetements", "prezzo_max": 40.0, "taglie": ["43"]},
-    {"nome": "Evisu", "prezzo_max": 30.0, "taglie": ["M", "L"]}, # NUOVO
-    {"nome": "Evisu", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "True Religion", "prezzo_max": 30.0, "taglie": ["M", "L"]}, # NUOVO
-    {"nome": "Vicinity", "prezzo_max": 35.0, "taglie": ["M", "L"]}, # NUOVO
-    {"nome": "Acne Studios", "prezzo_max": 40.0, "taglie": ["M", "L"]}, # NUOVO
-    {"nome": "Acne Studios", "prezzo_max": 65.0, "taglie": ["43"]}, # NUOVO
-    {"nome": "derschutze", "prezzo_max": 35.0, "taglie": ["M", "L"]}, # NUOVO
-    {"nome": "Cold Culture", "prezzo_max": 35.0, "taglie": ["M", "L"]} # NUOVO
+    {"nome": "Stussy", "prezzo_max": 40.0},
+    {"nome": "Supreme", "prezzo_max": 40.0},
+    {"nome": "Palace", "prezzo_max": 40.0},
+    {"nome": "Burberry", "prezzo_max": 40.0},
+    {"nome": "Prada", "prezzo_max": 40.0},
+    {"nome": "Corteiz", "prezzo_max": 40.0},
+    {"nome": "Fear of God Essentials", "prezzo_max": 40.0},
+    {"nome": "Denim Tears", "prezzo_max": 40.0},
+    {"nome": "Cactus Plant", "prezzo_max": 40.0},
+    {"nome": "Off-White", "prezzo_max": 40.0},
+    {"nome": "Raf Simons", "prezzo_max": 40.0},
+    {"nome": "Rick Owens", "prezzo_max": 80.0},
+    {"nome": "Enfants Riches Déprimés", "prezzo_max": 80.0},
+    {"nome": "ERD", "prezzo_max": 40.0},
+    {"nome": "Helmut Lang", "prezzo_max": 40.0},
+    {"nome": "Margiela", "prezzo_max": 40.0},
+    {"nome": "Yohji Yamamoto", "prezzo_max": 40.0},
+    {"nome": "Comme des Garçons", "prezzo_max": 40.0},
+    {"nome": "Undercover", "prezzo_max": 40.0},
+    {"nome": "CP Company", "prezzo_max": 40.0},
+    {"nome": "Stone Island", "prezzo_max": 40.0},
+    {"nome": "Carhartt", "prezzo_max": 40.0},
+    {"nome": "Nike", "prezzo_max": 65.0},
+    {"nome": "Jordan", "prezzo_max": 65.0},
+    {"nome": "Jordan 5", "prezzo_max": 65.0},
+    {"nome": "Jordan 11", "prezzo_max": 65.0},
+    {"nome": "Jordan 12", "prezzo_max": 65.0},
+    {"nome": "Jordan 13", "prezzo_max": 65.0},
+    {"nome": "Adidas", "prezzo_max": 65.0},
+    {"nome": "Chrome Hearts", "prezzo_max": 40.0},
+    {"nome": "Hellstar", "prezzo_max": 40.0},
+    {"nome": "Sp5der", "prezzo_max": 40.0},
+    {"nome": "Syna World", "prezzo_max": 40.0},
+    {"nome": "Trapstar", "prezzo_max": 40.0},
+    {"nome": "Sicko Born", "prezzo_max": 40.0},
+    {"nome": "Gallery Dept", "prezzo_max": 40.0},
+    {"nome": "RRR123", "prezzo_max": 40.0},
+    {"nome": "Balenciaga", "prezzo_max": 40.0},
+    {"nome": "Vetements", "prezzo_max": 40.0},
+    {"nome": "Evisu", "prezzo_max": 65.0},
+    {"nome": "True Religion", "prezzo_max": 30.0},
+    {"nome": "Vicinity", "prezzo_max": 35.0},
+    {"nome": "Acne Studios", "prezzo_max": 65.0},
+    {"nome": "derschutze", "prezzo_max": 35.0},
+    {"nome": "Cold Culture", "prezzo_max": 35.0}
 ]
 
 monitora_vinted_istantaneo(MIE_RICERCHE, secondi_attesa_giro=10)
