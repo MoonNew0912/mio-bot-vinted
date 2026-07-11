@@ -4,7 +4,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 
 # Configurazione
-BOT_TOKEN = os.getenv("8948272794:AAEjodIDu_-WDIeby8WB2I6N_baki-h-rSo")
+# Ricorda: BOT_TOKEN deve essere impostato in Render sotto 'Environment'
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = "387028237"
 SEEN_FILE = "seen_items.json"
 
@@ -13,16 +14,22 @@ logging.basicConfig(level=logging.INFO)
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, 'r') as f: return set(json.load(f))
+        with open(SEEN_FILE, 'r') as f: 
+            try:
+                return set(json.load(f))
+            except:
+                return set()
     return set()
 
 def save_seen(seen_ids):
-    with open(SEEN_FILE, 'w') as f: json.dump(list(seen_ids), f)
+    with open(SEEN_FILE, 'w') as f: 
+        json.dump(list(seen_ids), f)
 
 seen_items = load_seen()
 
 @app.route('/')
-def home(): return "Bot is running!"
+def home(): 
+    return "Bot is running!"
 
 def run_web_server(): 
     port = int(os.environ.get("PORT", 10000))
@@ -39,7 +46,6 @@ async def cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = context.args[0]
     max_price = context.args[1]
     
-    # URL di ricerca Vinted
     url = f"https://www.vinted.it/api/v2/catalog/items?search_text={query}&price_to={max_price}&order=price_asc"
     headers = {"User-Agent": "Mozilla/5.0"}
     
@@ -51,11 +57,10 @@ async def cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = 0
         for item in items:
             item_id = str(item['id'])
-            # Filtro duplicati
             if item_id in seen_items: continue
             
-            # Filtro brand (esclusione Nike/Adidas)
             brand = item.get('brand_title', '') or ''
+            # Filtro brand (esclusione Nike/Adidas)
             if "nike" in brand.lower() or "adidas" in brand.lower(): continue
             
             seen_items.add(item_id)
@@ -71,7 +76,7 @@ async def cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_seen(seen_items)
         if count == 0: await update.message.reply_text("Nessun nuovo articolo trovato.")
     except Exception as e:
-        await update.message.reply_text(f"Errore: {str(e)}")
+        await update.message.reply_text(f"Errore nella ricerca: {str(e)}")
 
 if __name__ == '__main__':
     threading.Thread(target=run_web_server).start()
